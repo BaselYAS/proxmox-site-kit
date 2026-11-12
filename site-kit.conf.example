@@ -1,5 +1,6 @@
 # Copy to site-kit.conf (never commit it) and fill in what you have. Everything is optional.
 # Tailscale: either a ready auth key (tagged tag:client, from login.tailscale.com > Settings > Keys) ...
+# TAILSCALE=off   # skip Tailscale entirely (prep + relocate); default on
 TS_AUTHKEY=""
 # ... or a file holding a Tailscale API token, to mint a one-time key per box. Neither = login URL in the log.
 TS_API_TOKEN_FILE=""

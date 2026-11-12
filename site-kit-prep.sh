@@ -1,12 +1,13 @@
 #!/bin/bash
 # site-kit-prep.sh — stand up a fresh Proxmox VE box as a standard edge/site box, in one command.
 #
-#   site-kit-prep.sh <NAME> <LAN-IP> [--net keep|dhcp|static <ADDR/CIDR> <GATEWAY>] [--no-tunnel] [--fg]
+#   site-kit-prep.sh <NAME> <LAN-IP> [--net keep|dhcp|static <ADDR/CIDR> <GATEWAY>] [--no-tunnel] [--no-tailscale] [--fg]
 #     NAME     box identity, e.g. SITE7 (used for every guest: SITE7-Frigate …, Tailscale site7, hostnames site7-prox/-ha)
 #     LAN-IP   where the box answers SSH right now (root key must already be in /root/.ssh/authorized_keys)
 #     --net    keep (default): leave the network as configured, only fix /etc/hosts to the real IP
 #              dhcp: switch vmbr0 to DHCP · static: set vmbr0 to ADDR/CIDR + GATEWAY
 #     --no-tunnel  skip the Cloudflare tunnel step
+#     --no-tailscale  don't install Tailscale (or TAILSCALE=off in the config); everything runs over the LAN IP
 #     --fg     run in the foreground (default: detached with setsid, so a closed terminal never kills it)
 #
 # Steps (log: WORK_DIR/<name>/driver.log, one log per step next to it):
@@ -25,10 +26,10 @@ set -u
 usage(){ sed -n '2,/^set -u/{/^set -u/d;s/^# \{0,1\}//;p}' "$0"; }
 case "${1:-}" in -h|--help) usage; exit 0 ;; esac
 [ $# -ge 2 ] || { usage; exit 2; }
-N="$1"; IP="$2"; shift 2; NET=keep; SADDR=""; SGW=""; TUNNEL=1; FG=0
+N="$1"; IP="$2"; shift 2; NET=keep; SADDR=""; SGW=""; TUNNEL=1; FG=0; NO_TS=0
 while [ $# -gt 0 ]; do case "$1" in
   --net) NET="$2"; shift 2; if [ "$NET" = static ]; then SADDR="$1"; SGW="$2"; shift 2; fi ;;
-  --no-tunnel) TUNNEL=0; shift ;; --fg) FG=1; shift ;; *) echo "unknown option $1"; exit 2 ;; esac; done
+  --no-tunnel) TUNNEL=0; shift ;; --no-tailscale) NO_TS=1; shift ;; --fg) FG=1; shift ;; *) echo "unknown option $1"; exit 2 ;; esac; done
 [[ "$N" =~ ^[A-Za-z0-9-]+$ ]] || { echo "bad NAME"; exit 2; }
 case "$NET" in keep|dhcp|static) ;; *) echo "--net must be keep|dhcp|static"; exit 2 ;; esac
 n=$(echo "$N" | tr 'A-Z' 'a-z'); T=$(cd "$(dirname "$0")" && pwd)
@@ -41,13 +42,17 @@ n=$(echo "$N" | tr 'A-Z' 'a-z'); T=$(cd "$(dirname "$0")" && pwd)
 #   WORK_DIR                         where logs go (default ~/site-kit-work)
 #   NOTIFY_CMD                       optional command run at the end with the box name and log dir as arguments
 TS_AUTHKEY=""; TS_API_TOKEN_FILE=""; CF_API_TOKEN_FILE=""; CF_ZONE=""; WORK_DIR="$HOME/site-kit-work"; NOTIFY_CMD=""
-UBUNTU_USER="admin"; TIMEZONE="Asia/Riyadh"
+UBUNTU_USER="admin"; TIMEZONE="Asia/Riyadh"; TAILSCALE="on"
 CONF="${SITEKIT_CONF:-$T/site-kit.conf}"; [ -f "$CONF" ] && . "$CONF"
+[ "$NO_TS" = 1 ] && TAILSCALE=off
+# Without Tailscale the script reaches the box only on its LAN IP: --net dhcp could move it mid-run, so refuse it;
+# --net static switches the connection to the new address after the change.
+[ "$TAILSCALE" = off ] && [ "$NET" = dhcp ] && { echo "--net dhcp needs Tailscale (the IP may change mid-run); use --net keep or --net static"; exit 2; }
 [[ "$UBUNTU_USER" =~ ^[a-z_][a-z0-9_-]*$ ]] || { echo "bad UBUNTU_USER"; exit 2; }
 [[ "$TIMEZONE" =~ ^[A-Za-z0-9_+/-]+$ ]] || { echo "bad TIMEZONE"; exit 2; }
 W="$WORK_DIR/$n"; mkdir -p "$W"
 if [ "$FG" = 0 ]; then
-  setsid nohup "$0" "$N" "$IP" --net "$NET" $SADDR $SGW $([ $TUNNEL = 0 ] && echo --no-tunnel) --fg >/dev/null 2>&1 < /dev/null &
+  setsid nohup "$0" "$N" "$IP" --net "$NET" $SADDR $SGW $([ $TUNNEL = 0 ] && echo --no-tunnel) $([ "$TAILSCALE" = off ] && echo --no-tailscale) --fg >/dev/null 2>&1 < /dev/null &
   echo "started detached: $N ($IP), log $W/driver.log"; exit 0
 fi
 S="ssh -o BatchMode=yes -o ServerAliveInterval=30 -o StrictHostKeyChecking=accept-new"
@@ -58,6 +63,8 @@ $S root@$IP true 2>>"$W/driver.log" || { log "cannot SSH root@$IP (is the key ad
 
 log "1 host"; tpl host | timeout 1500 $S root@$IP 'bash -s' >> "$W/host.log" 2>&1; log "  rc=$?"
 
+if [ "$TAILSCALE" = off ]; then log "2 tailscale skipped (--no-tailscale / TAILSCALE=off): working over the LAN IP"; H=root@$IP
+else
 log "2 tailscale"
 K="$TS_AUTHKEY"
 if [ -z "$K" ] && [ -n "$TS_API_TOKEN_FILE" ] && [ -r "$TS_API_TOKEN_FILE" ]; then TT=$(cat "$TS_API_TOKEN_FILE")
@@ -73,6 +80,7 @@ fi
 TS=$(head -1 "$W/ts_ip"); log "  tailscale $n = ${TS:-FAILED}"
 [ -n "$TS" ] || { log "stopping: no Tailscale"; exit 1; }
 H=root@$TS
+fi
 
 for s in frigate ha ubuntu; do log "3-5 $s"; tpl $s | timeout 2400 $S $H 'bash -s' >> "$W/$s.log" 2>&1; log "  rc=$?"; done
 
@@ -85,6 +93,7 @@ open(p,'w').write(re.sub(r'iface vmbr0 inet static\n(\s+address [^\n]+\n)(\s+gat
 import re;p='/etc/network/interfaces';s=open(p).read()
 s=re.sub(r'iface vmbr0 inet (dhcp|static)\n(\s+address [^\n]+\n)?(\s+gateway [^\n]+\n)?','iface vmbr0 inet static\n\taddress $SADDR\n\tgateway $SGW\n',s);open(p,'w').write(s)\"; (sleep 2; ifreload -a) >/dev/null 2>&1 &" ; sleep 25 ;;
 esac
+[ "$TAILSCALE" = off ] && [ "$NET" = static ] && H=root@${SADDR%/*}
 HOSTIP=$($S $H "ip -4 -br a show vmbr0 | awk '{print \$3}' | cut -d/ -f1")
 $S $H "sed -i -E 's/^[0-9.]+ ($N\\.\\S*) $N.*/$HOSTIP \\1 $N   # set by site-kit-prep; update if the IP changes/' /etc/hosts; systemctl restart pve-cluster pveproxy" >> "$W/driver.log" 2>&1
 log "  host IP $HOSTIP"
@@ -96,7 +105,7 @@ except Exception: pass"); [ -n "$HAIP" ] && break; sleep 20; done
 log "  HA IP ${HAIP:-unknown}"
 # 6b REQUIRED on every box: share ONLY HA's address over Tailscale (a /32, never the whole site LAN), so HA's own UI
 #    stays reachable from anywhere once the box sits on a site LAN. Approved via the API when TS_API_TOKEN_FILE is set.
-if [ -n "$HAIP" ]; then
+if [ -n "$HAIP" ] && [ "$TAILSCALE" != off ]; then
   $S $H "printf 'net.ipv4.ip_forward=1\n' > /etc/sysctl.d/99-tailscale-route.conf; sysctl -q -p /etc/sysctl.d/99-tailscale-route.conf; tailscale set --advertise-routes=$HAIP/32" >> "$W/driver.log" 2>&1
   if [ -n "$TS_API_TOKEN_FILE" ] && [ -r "$TS_API_TOKEN_FILE" ]; then
     TT=$(cat "$TS_API_TOKEN_FILE")
@@ -104,8 +113,8 @@ if [ -n "$HAIP" ]; then
     [ -n "$DID" ] && curl -s -m 20 -u "$TT:" -X POST "https://api.tailscale.com/api/v2/device/$DID/routes" -H "Content-Type: application/json" -d "{\"routes\":[\"$HAIP/32\"]}" >/dev/null && log "  HA route $HAIP/32 shared over Tailscale (approved)"
     unset TT
   else log "  HA route $HAIP/32 advertised; APPROVE it in the Tailscale admin console (Machines > $n > Edit route settings)"; fi
-  log "  HA trusted proxy:"; timeout 240 $S $H 'bash -s' < "$T/steps/ha_proxy.sh" >> "$W/driver.log" 2>&1
 fi
+if [ -n "$HAIP" ]; then log "  HA trusted proxy:"; timeout 240 $S $H 'bash -s' < "$T/steps/ha_proxy.sh" >> "$W/driver.log" 2>&1; fi
 
 if [ "$TUNNEL" = 1 ] && { [ -z "$CF_API_TOKEN_FILE" ] || [ ! -r "$CF_API_TOKEN_FILE" ] || [ -z "$CF_ZONE" ]; }; then log "7 tunnel skipped (no CF_API_TOKEN_FILE/CF_ZONE in config)"; TUNNEL=0; fi
 if [ "$TUNNEL" = 1 ]; then

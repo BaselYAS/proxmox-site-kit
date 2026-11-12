@@ -13,7 +13,7 @@ usage(){ sed -n '2,/^set -u/{/^set -u/d;s/^# \{0,1\}//;p}' "$0"; }
 case "${1:-}" in -h|--help) usage; exit 0 ;; esac
 [ $# -ge 2 ] || { usage; exit 2; }
 N="$1"; IP="$2"; n=$(echo "$N" | tr A-Z a-z); T=$(cd "$(dirname "$0")" && pwd)
-TS_API_TOKEN_FILE=""; CF_API_TOKEN_FILE=""; CF_ZONE=""; CONF="${SITEKIT_CONF:-$T/site-kit.conf}"; [ -f "$CONF" ] && . "$CONF"
+TAILSCALE="on"; TS_API_TOKEN_FILE=""; CF_API_TOKEN_FILE=""; CF_ZONE=""; CONF="${SITEKIT_CONF:-$T/site-kit.conf}"; [ -f "$CONF" ] && . "$CONF"
 S="ssh -o BatchMode=yes -o ServerAliveInterval=30 -o StrictHostKeyChecking=accept-new root@$IP"
 echo "== 1-2 static + DNS"; timeout 300 $S 'bash -s' < "$T/steps/static.sh"
 sleep 10
@@ -25,7 +25,8 @@ try:
 except Exception: pass")
 echo "host $HOSTIP  HA ${HAIP:-?}"
 echo "== 3 HA trusted proxy"; timeout 240 $S 'bash -s' < "$T/steps/ha_proxy.sh"
-if [ -n "$HAIP" ]; then
+[ "$TAILSCALE" = off ] && echo "== 4 skipped (TAILSCALE=off)"
+if [ -n "$HAIP" ] && [ "$TAILSCALE" != off ]; then
   echo "== 4 HA over Tailscale"
   $S "printf 'net.ipv4.ip_forward=1\n' > /etc/sysctl.d/99-tailscale-route.conf; sysctl -q -p /etc/sysctl.d/99-tailscale-route.conf; tailscale set --advertise-routes=$HAIP/32" && echo "advertised $HAIP/32"
   if [ -n "$TS_API_TOKEN_FILE" ] && [ -r "$TS_API_TOKEN_FILE" ]; then TT=$(cat "$TS_API_TOKEN_FILE")

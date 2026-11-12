@@ -21,7 +21,8 @@ Every step skips what already exists, so both commands are safe to re-run.
 - Target: Proxmox VE 9 (Debian 13 "trixie" base) on a box with an Intel or AMD integrated GPU (`/dev/dri/renderD128`; tested on Intel N100/N150 and AMD Ryzen 5 3500U), `local-lvm` storage, bridge `vmbr0`, Ethernet plugged in, internet access.
 - Your SSH public key in the box's `/root/.ssh/authorized_keys`.
 - Control machine: any Linux with `bash`, `ssh`, `curl`, `python3`, `setsid`.
-- A Tailscale account (auth key or API token). Optional: a Cloudflare zone + API token for the tunnel.
+- A Tailscale account (auth key or API token), or run with `--no-tailscale` / `TAILSCALE=off` if you reach your sites another way
+  (your own VPN, or the Cloudflare `-prox` link). Without Tailscale, HA isn't shared remotely and `--net dhcp` is refused. Optional: a Cloudflare zone + API token for the tunnel.
 
 ## Quick start
     cp site-kit.conf.example site-kit.conf          # fill in your own keys (never commit it)

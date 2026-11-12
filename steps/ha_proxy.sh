@@ -14,4 +14,4 @@ else
 fi
 if grep -q '\"use_x_forwarded_for\"' \$F; then sed -i 's/\"use_x_forwarded_for\": false/\"use_x_forwarded_for\": true/' \$F
 else sed -i 's#      \"server_port\": \([0-9]*\),#      \"server_port\": \1,\n      \"use_x_forwarded_for\": true,#' \$F; fi
-ha core start >/dev/null 2>&1; echo 'HA proxy set to $NET'" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('out-data','').strip())"
+for i in 1 2 3 4 5 6 7 8 9 10 11 12; do ha core start >/dev/null 2>&1; sleep 5; docker ps --format '{{.Names}}' | grep -qx homeassistant && break; sleep 10; done; docker ps --format '{{.Names}}' | grep -qx homeassistant && echo 'HA proxy set to $NET (HA running)' || echo 'HA proxy set to $NET but HA did NOT start: run ha core start'" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('out-data','').strip())"

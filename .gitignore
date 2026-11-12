@@ -1,0 +1,5 @@
+site-kit.conf
+*.log
+site-kit-work/
+work/
+*-secrets/

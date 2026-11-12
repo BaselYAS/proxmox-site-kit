@@ -1,0 +1,12 @@
+# Copy to site-kit.conf (never commit it) and fill in what you have. Everything is optional.
+# Tailscale: either a ready auth key (tagged tag:client, from login.tailscale.com > Settings > Keys) ...
+TS_AUTHKEY=""
+# ... or a file holding a Tailscale API token, to mint a one-time key per box. Neither = login URL in the log.
+TS_API_TOKEN_FILE=""
+# Cloudflare tunnel step (needs both; token needs Cloudflare Tunnel Edit + Zone DNS Edit on that zone)
+CF_API_TOKEN_FILE=""
+CF_ZONE=""            # e.g. example.com  -> <box>-prox.example.com and <box>-ha.example.com
+UBUNTU_USER="admin"   # desktop VM user
+TIMEZONE="Asia/Riyadh" # host, containers and Ubuntu VM (any tz name, e.g. Europe/Berlin, UTC)
+WORK_DIR="$HOME/site-kit-work"
+NOTIFY_CMD=""         # optional: called as  $NOTIFY_CMD <BOX> <logdir>  when done

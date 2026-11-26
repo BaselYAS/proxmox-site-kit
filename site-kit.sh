@@ -38,7 +38,9 @@ KIT=$SELF_DIR
 yn(){ case "${1,,}" in y|yes) echo y ;; *) echo n ;; esac; }
 # ask VAR "question" "default": keeps an env/answers value, else asks (Enter = default)
 ask(){ local v=$1 q=$2 d=${3:-} a; if [ -n "${!v:-}" ]; then return; fi
-  if [ -t 0 ]; then read -r -p "$q [${d}]: " a; else a=""; fi; printf -v "$v" '%s' "${a:-$d}"; }
+  if [ -t 0 ]; then read -r -p "$q [${d}]: " a; else a=""; fi
+  a=${a//$'\r'/}; a=${a//\\/}; a="${a#"${a%%[![:space:]]*}"}"; a="${a%"${a##*[![:space:]]}"}"   # web consoles can send CR / stray chars
+  printf -v "$v" '%s' "${a:-$d}"; }
 cidr_ok(){ [[ $1 =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}$ ]]; }
 ip_ok(){ [[ $1 =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; }
 cur_cidr(){ ip -4 -br a show vmbr0 2>/dev/null | awk '{print $3}' | head -1; }
@@ -173,8 +175,9 @@ ask SITE "Site / box name (letters, digits, -)" "$(hostname -s)"
 ask TIMEZONE "Timezone" "Asia/Riyadh"; [ -e "/usr/share/zoneinfo/$TIMEZONE" ] || die "unknown timezone $TIMEZONE"
 echo "Host network now: $(cur_cidr) gw $(cur_gw) ($(grep -q 'iface vmbr0 inet dhcp' /etc/network/interfaces && echo DHCP || echo static))"
 ask NET_MODE "Host IP: keep as it is, or set static (keep/static)" "keep"
-case "$NET_MODE" in keep) HOST_CIDR=""; HOST_GW=""; HOST_DNS="" ;;
-  static) ask HOST_CIDR "  static host IP with /prefix" "$(cur_cidr)"; cidr_ok "$HOST_CIDR" || die "IP must look like 192.168.1.20/24"
+NET_MODE=$(printf %s "$NET_MODE" | tr "A-Z" "a-z")
+case "$NET_MODE" in keep|k) HOST_CIDR=""; HOST_GW=""; HOST_DNS="" ;;
+  static|s) NET_MODE=static; ask HOST_CIDR "  static host IP with /prefix" "$(cur_cidr)"; cidr_ok "$HOST_CIDR" || die "IP must look like 192.168.1.20/24"
           ask HOST_GW "  gateway" "$(cur_gw)"; ip_ok "$HOST_GW" || die "bad gateway"
           ask HOST_DNS "  DNS server" "$HOST_GW"; ip_ok "$HOST_DNS" || die "bad DNS" ;;
   *) die "keep or static" ;; esac

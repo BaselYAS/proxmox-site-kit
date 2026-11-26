@@ -9,6 +9,7 @@ if [ "${SK_SKIP_HOST:-0}" = 1 ]; then echo "host: left to site-kit.sh"
 elif grep -q "iface vmbr0 inet dhcp" /etc/network/interfaces; then
   cp -p /etc/network/interfaces /root/interfaces.before-static
   sed -i "s#iface vmbr0 inet dhcp#iface vmbr0 inet static\n\taddress $HIP\n\tgateway $GW#" /etc/network/interfaces
+  rm -f /etc/dhcp/dhclient-exit-hooks.d/site-kit-hosts   # site-kit DHCP bench hook
   echo "host: dhcp -> static $HIP"; NEEDRELOAD=1
 else echo "host: already static"; NEEDRELOAD=0; fi
 [ "${SK_SKIP_HOST:-0}" = 1 ] || sed -i -E "s/^[0-9.]+ ($N\.\S*) $N\b.*/${HIP%/*} \1 $N   # static/" /etc/hosts; grep " $N" /etc/hosts | head -1

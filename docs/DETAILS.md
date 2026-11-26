@@ -82,6 +82,7 @@ Secrets never live in this repo. The generated Ubuntu password is stored on the 
 - The work runs detached (`setsid`), so a dropped SSH session doesn't stop it; the window just follows `/root/site-kit.log`.
 - Order: host basics + containers → Tailscale (approval link, waits up to `TS_WAIT_MIN`) → Frigate → HA → Ubuntu →
   Cloudflare connector → HA trusted proxy (+ HA /32 route on Tailscale) → static guest IPs → host IP (last, it can drop the session) → checks.
+- `NET_MODE=dhcp` (bench prep only): `steps/host_dhcp.sh` sets vmbr0 `inet dhcp` last, keeps a rollback copy (`/root/interfaces.before-dhcp.*`, auto-restored if no lease in 60 s), and adds a dhclient hook (`/etc/dhcp/dhclient-exit-hooks.d/site-kit-hosts`) that keeps the hostname's `/etc/hosts` line on the current IP and restarts pve-cluster/pveproxy when it changes. Static mode and `site-kit-relocate.sh` remove the hook.
 - Frigate detector: Intel iGPU → OpenVINO on the GPU + VAAPI; AMD iGPU → OpenVINO on the CPU + VAAPI; no GPU → OpenVINO on the CPU, software decode.
 - Cloudflare: you paste a tunnel token (dashboard → Zero Trust → Networks → Tunnels); public hostnames are set in the dashboard.
   The token only lives in CT 105 `/etc/cloudflared/token` (600).

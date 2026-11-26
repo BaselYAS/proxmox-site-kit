@@ -20,7 +20,7 @@ On the box, as root (Proxmox web UI → the node → **Shell**, or SSH):
 
 ## What it asks (Enter = default)
 - Site / box name · timezone (`Asia/Riyadh`)
-- Host IP: keep, or static (IP/prefix, gateway, DNS)
+- Host IP: keep, static (IP/prefix, gateway, DNS), or dhcp (bench prep only: back to static at the site with `site-kit-relocate.sh` or the kit with static)
 - Frigate [y] · Home Assistant [y] · Ubuntu desktop [n] · Cloudflare tunnel [n] (then the tunnel token) · Tailscale [y]
 - Lock the guests to static IPs [y]
 

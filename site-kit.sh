@@ -41,6 +41,7 @@ ask(){ local v=$1 q=$2 d=${3:-} a; if [ -n "${!v:-}" ]; then return; fi
   if [ -t 0 ]; then read -r -p "$q [${d}]: " a; else a=""; fi
   a=${a//$'\r'/}; a=${a//\\/}; a="${a#"${a%%[![:space:]]*}"}"; a="${a%"${a##*[![:space:]]}"}"   # web consoles can send CR / stray chars
   printf -v "$v" '%s' "${a:-$d}"; }
+DHCP_WARN="DHCP is for bench prep only: run site-kit-relocate.sh (or the kit with static) at the site"
 cidr_ok(){ [[ $1 =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}$ ]]; }
 ip_ok(){ [[ $1 =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; }
 cur_cidr(){ ip -4 -br a show vmbr0 2>/dev/null | awk '{print $3}' | head -1; }
@@ -156,13 +157,16 @@ import re,sys;p='/etc/network/interfaces';s=open(p).read();a,g=sys.argv[1],sys.a
 s=re.sub(r'iface vmbr0 inet (dhcp|static|manual)\n((?:[ \t]+(?:address|gateway) [^\n]*\n)*)','iface vmbr0 inet static\n\taddress %s\n\tgateway %s\n'%(a,g),s,count=1);open(p,'w').write(s)
 PY
     sed -i -E "s/^[0-9.]+ ($(hostname)\.\S*) $(hostname)\b.*/${HOST_CIDR%/*} \1 $(hostname)   # set by site-kit/" /etc/hosts
+    rm -f /etc/dhcp/dhclient-exit-hooks.d/site-kit-hosts   # DHCP bench mode hook, not needed on static
     [ -n "${HOST_DNS:-}" ] && printf 'search %s\nnameserver %s\n' "$(hostname -d 2>/dev/null || echo local)" "$HOST_DNS" > /etc/resolv.conf
     echo "rollback: cp /root/interfaces.before-site-kit.* /etc/network/interfaces; ifreload -a"
     echo "host moves to ${HOST_CIDR%/*} in 5 s: reconnect there (https://${HOST_CIDR%/*}:8006)"
     (sleep 5; ifreload -a; systemctl restart pve-cluster pveproxy) >/dev/null 2>&1 &
     sleep 15
-  elif [ "$NET_MODE" = static ]; then echo "host already at $HOST_CIDR gw $HOST_GW"; fi
+  elif [ "$NET_MODE" = static ]; then echo "host already at $HOST_CIDR gw $HOST_GW"
+  elif [ "$NET_MODE" = dhcp ]; then say "9 host IP -> DHCP"; SK_WAIT=1 timeout 300 bash "$KIT/steps/host_dhcp.sh"; fi
   checks; manual_left
+  [ "$NET_MODE" = dhcp ] && echo " - !! $DHCP_WARN"
   echo "=== site-kit done $(date '+%F %T')"; exit 0
 fi
 
@@ -174,13 +178,14 @@ ask SITE "Site / box name (letters, digits, -)" "$(hostname -s)"
 [[ $SITE =~ ^[A-Za-z0-9-]{2,30}$ ]] || die "site name: 2-30 letters, digits or -"
 ask TIMEZONE "Timezone" "Asia/Riyadh"; [ -e "/usr/share/zoneinfo/$TIMEZONE" ] || die "unknown timezone $TIMEZONE"
 echo "Host network now: $(cur_cidr) gw $(cur_gw) ($(grep -q 'iface vmbr0 inet dhcp' /etc/network/interfaces && echo DHCP || echo static))"
-ask NET_MODE "Host IP: keep as it is, or set static (keep/static)" "keep"
+ask NET_MODE "Host IP: keep as it is, set static, or DHCP for bench prep (keep/static/dhcp)" "keep"
 NET_MODE=$(printf %s "$NET_MODE" | tr "A-Z" "a-z")
-case "$NET_MODE" in keep|k) HOST_CIDR=""; HOST_GW=""; HOST_DNS="" ;;
+case "$NET_MODE" in keep|k) NET_MODE=keep; HOST_CIDR=""; HOST_GW=""; HOST_DNS="" ;;
+  dhcp|d) NET_MODE=dhcp; HOST_CIDR=""; HOST_GW=""; HOST_DNS=""; echo "  $DHCP_WARN" ;;
   static|s) NET_MODE=static; ask HOST_CIDR "  static host IP with /prefix" "$(cur_cidr)"; cidr_ok "$HOST_CIDR" || die "IP must look like 192.168.1.20/24"
           ask HOST_GW "  gateway" "$(cur_gw)"; ip_ok "$HOST_GW" || die "bad gateway"
           ask HOST_DNS "  DNS server" "$HOST_GW"; ip_ok "$HOST_DNS" || die "bad DNS" ;;
-  *) die "keep or static" ;; esac
+  *) die "keep, static or dhcp" ;; esac
 ask P_FRIGATE "Frigate NVR (CT 101)? (y/n)" "y"; P_FRIGATE=$(yn "$P_FRIGATE")
 ask P_HA "Home Assistant OS (VM 102)? (y/n)" "y"; P_HA=$(yn "$P_HA")
 ask P_UBUNTU "Ubuntu desktop (VM 103)? (y/n)" "n"; P_UBUNTU=$(yn "$P_UBUNTU")
@@ -196,12 +201,12 @@ fi
 ask P_TS "Tailscale on the host (remote access)? (y/n)" "y"; P_TS=$(yn "$P_TS")
 [ "$P_TS" = y ] && ask TS_TAGS "Tailscale tag for this box (type none for no tag)" "tag:client"
 TS_TAGS=${TS_TAGS:-tag:client}; [ "$TS_TAGS" = none ] && TS_TAGS=""; TS_WAIT_MIN=${TS_WAIT_MIN:-10}
-ask LOCK_STATIC "Lock the new guests to the IP they get (static, no DHCP reservations needed)? (y/n)" "y"; LOCK_STATIC=$(yn "$LOCK_STATIC")
+ask LOCK_STATIC "Lock the new guests to the IP they get (static, no DHCP reservations needed)? (y/n)" "$([ "$NET_MODE" = dhcp ] && echo n || echo y)"; LOCK_STATIC=$(yn "$LOCK_STATIC")
 n=${SITE,,}
 say "Summary"
 cat <<S
  box        $SITE   (timezone $TIMEZONE)
- host IP    $([ "$NET_MODE" = static ] && echo "set static $HOST_CIDR gw $HOST_GW dns $HOST_DNS (done last; reconnect there)" || echo "keep $(cur_cidr)")
+ host IP    $(case "$NET_MODE" in static) echo "set static $HOST_CIDR gw $HOST_GW dns $HOST_DNS (done last; reconnect there)" ;; dhcp) echo "DHCP (done last; the IP may change: reconnect via Tailscale)" ;; *) echo "keep $(cur_cidr)" ;; esac)
  Frigate    $P_FRIGATE   CT 101 $SITE-Frigate (4 cores, 4 GB, 40 GB) $( [ -e /dev/dri/renderD128 ] && echo "GPU $(cat /sys/class/drm/renderD128/device/vendor 2>/dev/null)" || echo "no GPU found: CPU detector")
  Home Asst  $P_HA   VM 102 $SITE-HA (2 cores, 3 GB, 32 GB)
  Ubuntu     $P_UBUNTU   VM 103 $SITE-Ubuntu (2 cores, 3 GB, 40 GB)
@@ -210,6 +215,7 @@ cat <<S
  static IPs $LOCK_STATIC
  Existing guests with these IDs are left alone (skipped). Log: $LOG
 S
+[ "$NET_MODE" = dhcp ] && echo " !! $DHCP_WARN"
 for id in 101 102 103 105; do { pct status $id >/dev/null 2>&1 || qm status $id >/dev/null 2>&1; } && echo " note: ID $id already exists -> skipped"; done
 if [ -z "${SK_YES:-}" ] && [ -t 0 ]; then read -r -p "Go? (y/n) [y]: " a; [ "$(yn "${a:-y}")" = y ] || { echo "stopped, nothing changed"; exit 0; }; fi
 ( umask 077

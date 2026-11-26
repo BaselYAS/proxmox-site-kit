@@ -184,6 +184,8 @@ if [ "${1:-}" = --run ]; then
   [ "$NET_MODE" != keep ] && part "Host IP -> $([ "$NET_MODE" = dhcp ] && echo DHCP || echo "$HOST_CIDR gw $HOST_GW")" p_hostip
   recap
   { checks; manual_left; [ "$NET_MODE" = dhcp ] && echo " - !! $DHCP_WARN"; echo "=== site-kit done $(date '+%F %T')"; } 2>&1 | tee -a "$SK_SCREEN"
+  # last of all: apply the pop-up patch to the web page (may blink the web console once; everything is finished by now)
+  [ -f /root/.site-kit-proxy-reload ] && { rm -f /root/.site-kit-proxy-reload; sleep 3; systemctl reload pveproxy >/dev/null 2>&1; }
   exit 0
 fi
 

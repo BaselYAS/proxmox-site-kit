@@ -14,7 +14,7 @@ export DEBIAN_FRONTEND=noninteractive
 note "apt update"; apt-get update -q
 UP=$(apt list --upgradable 2>/dev/null | grep -c upgradable || true); note "upgrading $UP packages"
 apt-get -y -q -o Dpkg::Options::=--force-confold dist-upgrade; note "installing smartmontools"; apt-get -y -q install smartmontools
-f=/usr/share/javascript/proxmox-widget-toolkit/proxmoxlib.js; grep -q NoMoreNagging $f || { sed -i.bak "s/res === null || res === undefined || \!res || res\s*\.data\.status\.toLowerCase() !== 'active'/false/" $f; echo "// NoMoreNagging" >> $f; systemctl reload pveproxy; }   # only when patched, and reload (graceful) not restart: a restart cut the web console the kit runs in
+f=/usr/share/javascript/proxmox-widget-toolkit/proxmoxlib.js; grep -q NoMoreNagging $f || { sed -i.bak "s/res === null || res === undefined || \!res || res\s*\.data\.status\.toLowerCase() !== 'active'/false/" $f; echo "// NoMoreNagging" >> $f; touch /root/.site-kit-proxy-reload; }   # web service reloads at the very END of the kit (site-kit.sh): reloading here cut the web console mid-run
 pveversion; for d in $(lsblk -dno NAME,TYPE | awk '$2=="disk"{print $1}'); do R=$(smartctl -H /dev/$d 2>/dev/null | grep -i result | sed "s/.*: *//"); note "SMART $d: ${R:-no SMART data (virtual disk or USB bridge?)}"; done
 # newest Debian 13 template already on the box, else the newest one pveam offers
 TF=$(ls /var/lib/vz/template/cache/ 2>/dev/null | grep '^debian-13-standard_.*_amd64.tar.zst$' | sort -V | tail -1)

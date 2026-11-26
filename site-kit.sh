@@ -85,7 +85,7 @@ manual_left(){
   echo " - BIOS: set \"power on after AC loss\" (Restore on AC power loss = Power On), so the box comes back after a power cut"
   pct status 101 >/dev/null 2>&1 && echo " - Frigate: add the cameras (http://$(guest_ip ct 101 || echo '<Frigate IP>'):5000 > Settings, or /opt/frigate/config/config.yml in CT 101)"
   qm status 103 >/dev/null 2>&1 && echo " - Ubuntu desktop: password is in /root/$SITE-secrets/ (change it: qm guest passwd 103 $UBUNTU_USER)"
-  [ "${P_TS:-n}" = y ] && echo " - Tailscale: approve the box in the admin console if asked, and ask your network admin for this box's access rule (hub ACL)"
+  [ "${P_TS:-n}" = y ] && echo " - Tailscale: approve the box in the admin console if asked. Tagged tag:client = the hub rule applies by itself; untagged = ask your network admin for the box's access rule"
   [ "${P_TS:-n}" = y ] && [ -n "$(tailscale ip -4 2>/dev/null)" ] && qm status 102 >/dev/null 2>&1 && echo " - Tailscale: approve the HA route ($(guest_ip vm 102)/32) in the admin console (Machines > $n > Edit route settings)"
 }
 handover(){
@@ -114,13 +114,17 @@ if [ "${1:-}" = --run ]; then
     else
       TAGS=""; [ -n "${TS_TAGS:-}" ] && TAGS="--advertise-tags=$TS_TAGS"
       (tailscale up --hostname="$n" $TAGS >/tmp/ts-up.log 2>&1 &); sleep 8
+      if [ -n "$TAGS" ] && grep -q -i -E "tag.*(not|invalid|permitted|owner)|requested tags" /tmp/ts-up.log; then
+        echo "!! Tailscale refused the tag ${TS_TAGS} (it must exist in the tailnet's tagOwners). Joining WITHOUT a tag; ask your admin to tag the box."
+        (tailscale up --hostname="$n" --reset >/tmp/ts-up.log 2>&1 &); sleep 8
+      fi
       U=$(grep -o 'https://login.tailscale.com[^ ]*' /tmp/ts-up.log | head -1)
       [ -n "$U" ] && { echo ">>> APPROVE THIS BOX IN TAILSCALE: open this link and log in:"; echo ">>> $U"; }
       for i in $(seq $(( ${TS_WAIT_MIN:-10} * 6 ))); do [ -n "$(tailscale ip -4 2>/dev/null)" ] && break; sleep 10; done
       if [ -n "$(tailscale ip -4 2>/dev/null)" ]; then echo "Tailscale online: $(tailscale ip -4 | head -1)"
       else echo "!! Tailscale not approved within ${TS_WAIT_MIN:-10} min: carrying on. Later: run  tailscale up  and open the link."; fi
     fi
-    echo "Reminder: ask your network admin (Infra/Admin) to add this box's access rule on the hub (Tailscale ACL), or the hub can't reach it."
+    echo "Reminder: with tag:client the hub access rule applies by itself; if the box joined untagged, ask your network admin to tag it or add its rule."
   fi
   [ "$P_FRIGATE" = y ] && { say "3 Frigate (CT 101)"; run_step frigate 1800 || echo "!! Frigate step had errors"; }
   [ "$P_HA" = y ] && { say "4 Home Assistant (VM 102)"; run_step ha 1800 || echo "!! HA step had errors"; }
@@ -187,7 +191,8 @@ if [ "$P_CF" = y ] && ! pct exec 105 -- test -s /etc/cloudflared/token 2>/dev/nu
   [ -n "$t" ] && ( umask 077; printf '%s\n' "${t##* }" > /root/.site-kit-cf-token ); unset t CF_TOKEN
 fi
 ask P_TS "Tailscale on the host (remote access)? (y/n)" "y"; P_TS=$(yn "$P_TS")
-TS_TAGS=${TS_TAGS:-}; TS_WAIT_MIN=${TS_WAIT_MIN:-10}
+[ "$P_TS" = y ] && ask TS_TAGS "Tailscale tag for this box (type none for no tag)" "tag:client"
+TS_TAGS=${TS_TAGS:-tag:client}; [ "$TS_TAGS" = none ] && TS_TAGS=""; TS_WAIT_MIN=${TS_WAIT_MIN:-10}
 ask LOCK_STATIC "Lock the new guests to the IP they get (static, no DHCP reservations needed)? (y/n)" "y"; LOCK_STATIC=$(yn "$LOCK_STATIC")
 n=${SITE,,}
 say "Summary"

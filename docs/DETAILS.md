@@ -78,7 +78,7 @@ Secrets never live in this repo. The generated Ubuntu password is stored on the 
 - Questions are saved to `/root/site-kit.answers` (no secrets) and reused on a re-run; delete it to be asked again.
   Any answer can be given ahead as an environment variable with the same name (`SITE`, `TIMEZONE`, `NET_MODE`=keep|static,
   `HOST_CIDR`, `HOST_GW`, `HOST_DNS`, `P_FRIGATE`, `P_HA`, `P_UBUNTU`, `UBUNTU_USER`, `P_CF`, `CF_TOKEN`, `P_TS`,
-  `TS_TAGS` e.g. `tag:client`, `TS_WAIT_MIN` default 10, `LOCK_STATIC`), plus `SK_YES=1` to skip the confirm.
+  `TS_TAGS` (default `tag:client`, `none` = no tag; if the tailnet refuses the tag the box joins untagged), `TS_WAIT_MIN` default 10, `LOCK_STATIC`), plus `SK_YES=1` to skip the confirm.
 - The work runs detached (`setsid`), so a dropped SSH session doesn't stop it; the window just follows `/root/site-kit.log`.
 - Order: host basics + containers → Tailscale (approval link, waits up to `TS_WAIT_MIN`) → Frigate → HA → Ubuntu →
   Cloudflare connector → HA trusted proxy (+ HA /32 route on Tailscale) → static guest IPs → host IP (last, it can drop the session) → checks.

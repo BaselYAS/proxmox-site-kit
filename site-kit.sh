@@ -127,9 +127,9 @@ p_cloudflare(){
     pct push 105 /root/.site-kit-cf-token /root/cf-token >/dev/null && rm -f /root/.site-kit-cf-token
     note "installing cloudflared in CT 105"
     pct exec 105 -- bash -c 'export DEBIAN_FRONTEND=noninteractive; umask 077; mkdir -p /etc/cloudflared; mv /root/cf-token /etc/cloudflared/token
-command -v cloudflared >/dev/null || { apt-get update -q; apt-get install -y -q curl gpg; mkdir -p /usr/share/keyrings; curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg -o /usr/share/keyrings/cloudflare-main.gpg; echo "deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared any main" > /etc/apt/sources.list.d/cloudflared.list; apt-get update -q; apt-get install -y -q cloudflared; }
+command -v cloudflared >/dev/null || { apt-get update -q; apt-get install -y -q curl gpg; mkdir -p /usr/share/keyrings; curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg -o /usr/share/keyrings/cloudflare-main.gpg; chmod 644 /usr/share/keyrings/cloudflare-main.gpg; echo "deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared any main" > /etc/apt/sources.list.d/cloudflared.list; apt-get update -q; apt-get install -y -q cloudflared; }
 printf "[Unit]\nDescription=Cloudflare tunnel\nAfter=network-online.target\nWants=network-online.target\n[Service]\nExecStart=/usr/bin/cloudflared --no-autoupdate tunnel run --token-file /etc/cloudflared/token\nRestart=on-failure\nRestartSec=5\n[Install]\nWantedBy=multi-user.target\n" > /etc/systemd/system/cloudflared.service
-systemctl daemon-reload; systemctl enable --now cloudflared >/dev/null 2>&1; systemctl is-active cloudflared' && note "cloudflared running"
+command -v cloudflared >/dev/null || { echo "!! cloudflared did not install (see apt lines above)"; exit 1; }; chmod 600 /etc/cloudflared/token; systemctl daemon-reload; systemctl enable --now cloudflared >/dev/null 2>&1; sleep 5; systemctl is-active -q cloudflared || { echo "!! cloudflared not running: journalctl -u cloudflared"; exit 1; }' && note "cloudflared running"
   elif pct exec 105 -- test -s /etc/cloudflared/token 2>/dev/null; then skipped "tunnel token already in CT 105"
   else show "!! no tunnel token given: put it in CT 105 /etc/cloudflared/token and re-run"; return 1; fi; }
 p_haproxy(){ local HAIP="" i

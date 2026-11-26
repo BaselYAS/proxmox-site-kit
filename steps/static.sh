@@ -45,4 +45,4 @@ print(i['interface'], i['ipv4']['method'], (i['ipv4'].get('address') or [''])[0]
       qm guest exec $id -- sh -c "printf 'network:\n  version: 2\n  ethernets:\n    eth0:\n      dhcp4: false\n      addresses: [$ip]\n      routes: [{to: default, via: $GW}]\n      nameservers: {addresses: [$GW]}\n' > /etc/netplan/99-static.yaml; chmod 600 /etc/netplan/99-static.yaml; for f in /etc/netplan/*.yaml; do [ \$f = /etc/netplan/99-static.yaml ] || mv \$f \$f.disabled; done; netplan apply" >/dev/null 2>&1; echo "VM$id $name -> static $ip"; fi ;;
   esac
 done
-[ "$NEEDRELOAD" = 1 ] && { (sleep 2; ifreload -a; systemctl restart pve-cluster pveproxy) >/dev/null 2>&1 & echo "host network reload scheduled"; }
+[ "$NEEDRELOAD" = 1 ] && { (sleep 2; dhclient -x vmbr0 >/dev/null 2>&1; ifreload -a; systemctl restart pve-cluster pveproxy) >/dev/null 2>&1 & echo "host network reload scheduled"; }

@@ -161,7 +161,7 @@ PY
     [ -n "${HOST_DNS:-}" ] && printf 'search %s\nnameserver %s\n' "$(hostname -d 2>/dev/null || echo local)" "$HOST_DNS" > /etc/resolv.conf
     echo "rollback: cp /root/interfaces.before-site-kit.* /etc/network/interfaces; ifreload -a"
     echo "host moves to ${HOST_CIDR%/*} in 5 s: reconnect there (https://${HOST_CIDR%/*}:8006)"
-    (sleep 5; ifreload -a; systemctl restart pve-cluster pveproxy) >/dev/null 2>&1 &
+    (sleep 5; dhclient -x vmbr0 >/dev/null 2>&1; ifreload -a; systemctl restart pve-cluster pveproxy) >/dev/null 2>&1 &   # stop a bench-mode dhclient first
     sleep 15
   elif [ "$NET_MODE" = static ]; then echo "host already at $HOST_CIDR gw $HOST_GW"
   elif [ "$NET_MODE" = dhcp ]; then say "9 host IP -> DHCP"; SK_WAIT=1 timeout 300 bash "$KIT/steps/host_dhcp.sh"; fi

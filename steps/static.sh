@@ -1,20 +1,24 @@
 #!/bin/bash
 # Run ON a Proxmox box: lock host + guests to their CURRENT IPv4 (static), keep MACs. Args: none. Idempotent.
 set -u
-GW=$(ip route | awk '/default/{print $3; exit}'); HIP=$(ip -4 -br a show vmbr0 | awk '{print $3}'); N=$(hostname)
+GW=${SK_GW:-$(ip route | awk '/default/{print $3; exit}')}; HIP=$(ip -4 -br a show vmbr0 | awk '{print $3}'); N=$(hostname)
 echo "box $N host $HIP gw $GW"
-if grep -q "iface vmbr0 inet dhcp" /etc/network/interfaces; then
+NEEDRELOAD=0
+# site-kit.sh sets SK_SKIP_HOST=1: it handles the host IP itself (keep/static question)
+if [ "${SK_SKIP_HOST:-0}" = 1 ]; then echo "host: left to site-kit.sh"
+elif grep -q "iface vmbr0 inet dhcp" /etc/network/interfaces; then
   cp -p /etc/network/interfaces /root/interfaces.before-static
   sed -i "s#iface vmbr0 inet dhcp#iface vmbr0 inet static\n\taddress $HIP\n\tgateway $GW#" /etc/network/interfaces
   echo "host: dhcp -> static $HIP"; NEEDRELOAD=1
 else echo "host: already static"; NEEDRELOAD=0; fi
-sed -i -E "s/^[0-9.]+ ($N\.\S*) $N\b.*/${HIP%/*} \1 $N   # static/" /etc/hosts; grep " $N" /etc/hosts | head -1
+[ "${SK_SKIP_HOST:-0}" = 1 ] || sed -i -E "s/^[0-9.]+ ($N\.\S*) $N\b.*/${HIP%/*} \1 $N   # static/" /etc/hosts; grep " $N" /etc/hosts | head -1
 for id in $(pct list | tail -n +2 | awk '{print $1}'); do
   net=$(pct config $id | grep ^net0: | cut -d' ' -f2)
   if echo "$net" | grep -q "ip=dhcp"; then
     ip=$(pct exec $id -- sh -c "ip -4 -br a show eth0 | awk '{print \$3}'")
     new=$(echo "$net" | sed -E "s#ip=dhcp#ip=$ip,gw=$GW#; s#,ip6=[^,]*##")
-    pct set $id --net0 "$new" && echo "CT$id -> $ip"
+    # a running CT already has the address: lxc's live "addr add" then complains harmlessly, the config is still saved
+    pct set $id --net0 "$new" 2>&1 | grep -v -e "Address already assigned" -e "lxc-attach .* addr add"; pct config $id | grep -q "ip=$ip" && echo "CT$id -> $ip"
   else echo "CT$id already static ($(echo $net | grep -o 'ip=[^,]*'))"; fi
 done
 # container DNS = site router + 1.1.1.1, never Tailscale's 100.100.100.100 (containers can't reach it; it breaks cloudflared)

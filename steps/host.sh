@@ -1,6 +1,10 @@
+# shellcheck shell=bash
 set -e
-# Runs ON the Proxmox host (templated by site-kit-prep.sh: box name and timezone are filled in).
-N=__N__; T=local:vztmpl/debian-13-standard_13.6-1_amd64.tar.zst
+umask 022
+# Runs ON the Proxmox host (templated by site-kit.sh / site-kit-prep.sh: box name and timezone are filled in).
+N=__N__
+# containers to create (site-kit.sh sets SK_CTS; the old remote prep default keeps 101 104 105)
+SK_CTS=${SK_CTS:-101 104 105}
 echo "== repos+tz+update"
 for f in /etc/apt/sources.list.d/pve-enterprise.sources /etc/apt/sources.list.d/ceph.sources; do [ -f "$f" ] && { grep -q '^Enabled: no' $f || echo 'Enabled: no' >> $f; }; done
 printf 'Types: deb\nURIs: http://download.proxmox.com/debian/pve\nSuites: trixie\nComponents: pve-no-subscription\nSigned-By: /usr/share/keyrings/proxmox-archive-keyring.gpg\n' > /etc/apt/sources.list.d/proxmox.sources
@@ -8,24 +12,34 @@ timedatectl set-timezone __TZ__; timedatectl set-ntp true
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -q >/dev/null 2>&1; apt-get -y -q -o Dpkg::Options::=--force-confold dist-upgrade >/dev/null 2>&1; apt-get -y -q install smartmontools >/dev/null 2>&1
 f=/usr/share/javascript/proxmox-widget-toolkit/proxmoxlib.js; grep -q NoMoreNagging $f || { sed -i.bak "s/res === null || res === undefined || \!res || res\s*\.data\.status\.toLowerCase() !== 'active'/false/" $f; echo "// NoMoreNagging" >> $f; }; systemctl restart pveproxy
-pveversion; smartctl -H /dev/nvme0n1 | grep -i result
+pveversion; for d in $(lsblk -dno NAME,TYPE | awk '$2=="disk"{print $1}'); do smartctl -H /dev/$d 2>/dev/null | grep -i result | sed "s|^|$d: |"; done
 echo "== template"
-pveam update >/dev/null 2>&1; [ -f /var/lib/vz/template/cache/debian-13-standard_13.6-1_amd64.tar.zst ] || pveam download local debian-13-standard_13.6-1_amd64.tar.zst >/dev/null 2>&1; ls /var/lib/vz/template/cache/
+# newest Debian 13 template already on the box, else the newest one pveam offers
+TF=$(ls /var/lib/vz/template/cache/ 2>/dev/null | grep '^debian-13-standard_.*_amd64.tar.zst$' | sort -V | tail -1)
+if [ -z "$TF" ]; then pveam update >/dev/null 2>&1; TF=$(pveam available --section system | awk '{print $2}' | grep '^debian-13-standard_.*_amd64.tar.zst$' | sort -V | tail -1)
+  [ -n "$TF" ] && pveam download local "$TF" >/dev/null 2>&1; fi
+[ -n "$TF" ] && [ -f /var/lib/vz/template/cache/$TF ] || { echo "!! no Debian 13 CT template (pveam download failed?)"; exit 1; }
+T=local:vztmpl/$TF; echo "template $TF"
 echo "== CTs"
-mkdir -p -m 700 /root/$N-secrets; cp /root/.ssh/authorized_keys /root/$N-secrets/ct-keys.pub
-ls -l /dev/dri
-RGID=$(stat -c %g /dev/dri/renderD128); CGID=$(stat -c %g /dev/dri/card* | head -1); CARD=$(ls /dev/dri/card* | head -1)
+mkdir -p -m 700 /root/$N-secrets; cat /root/.ssh/authorized_keys > /root/$N-secrets/ct-keys.pub 2>/dev/null || true
+KEYS=""; [ -s /root/$N-secrets/ct-keys.pub ] && KEYS="--ssh-public-keys /root/$N-secrets/ct-keys.pub"
+GPUDEV=""; if [ -e /dev/dri/renderD128 ]; then ls -l /dev/dri; CARD=$(ls /dev/dri/card* 2>/dev/null | head -1)
+  GPUDEV="--dev0 /dev/dri/renderD128,gid=104"; [ -n "$CARD" ] && GPUDEV="$GPUDEV --dev1 $CARD,gid=44"
+else echo "no /dev/dri/renderD128: Frigate gets no GPU (CPU detector)"; fi
 mk(){ id=$1; name=$2; cores=$3; mem=$4; disk=$5; order=$6; shift 6
   pct status $id >/dev/null 2>&1 && { echo "$id exists"; return; }
   pct create $id $T --hostname $name --cores $cores --memory $mem --swap 512 --rootfs local-lvm:$disk \
     --net0 name=eth0,bridge=vmbr0,ip=dhcp --unprivileged 1 --features nesting=1,keyctl=1 \
-    --onboot 1 --startup order=$order --timezone __TZ__ --ssh-public-keys /root/$N-secrets/ct-keys.pub "$@" >/dev/null
+    --onboot 1 --startup order=$order --timezone __TZ__ $KEYS "$@" >/dev/null
   echo "created $id $name"; }
-mk 101 $N-Frigate 4 4096 40 1 --dev0 /dev/dri/renderD128,gid=104 --dev1 $CARD,gid=44
-mk 104 $N-Debian 1 512 8 4
-mk 105 $N-Cloudflare 1 256 2 5
-for id in 101 104 105; do pct start $id 2>/dev/null || true; done; sleep 12
-for id in 101 104 105; do pct exec $id -- bash -c '
+for id in $SK_CTS; do case $id in
+  101) mk 101 $N-Frigate 4 4096 40 1 $GPUDEV ;;
+  104) mk 104 $N-Debian 1 512 8 4 ;;
+  105) mk 105 $N-Cloudflare 1 256 2 5 ;;
+esac; done
+[ -n "$SK_CTS" ] || { echo "no containers asked for"; exit 0; }
+for id in $SK_CTS; do pct start $id 2>/dev/null || true; done; sleep 12
+for id in $SK_CTS; do pct exec $id -- bash -c '
 passwd -l root >/dev/null 2>&1
 for u in container-getty@1 console-getty; do mkdir -p /etc/systemd/system/$u.service.d; done
 printf "[Service]\nExecStart=\nExecStart=-/sbin/agetty --autologin root --noclear --keep-baud tty%%I 115200,38400,9600 \$TERM\n" > /etc/systemd/system/container-getty@1.service.d/autologin.conf

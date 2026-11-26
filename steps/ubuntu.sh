@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 set -e
 if qm status 103 >/dev/null 2>&1; then echo "103 exists"; exit 0; fi
 cd /var/lib/vz/template

@@ -1,5 +1,19 @@
+# shellcheck shell=bash
 set -e
-pct exec 101 -- bash -c '
+# Runs ON the Proxmox host. Detector by GPU: Intel iGPU -> OpenVINO on the GPU + VAAPI decode;
+# AMD iGPU -> OpenVINO on the CPU + VAAPI decode; no GPU -> OpenVINO on the CPU, software decode.
+pct status 101 >/dev/null 2>&1 || { echo "CT 101 missing (host step failed?)"; exit 1; }
+VEN=$(cat /sys/class/drm/renderD128/device/vendor 2>/dev/null || true)
+case "$VEN" in
+  0x8086) GPU=intel; OVDEV=GPU; HW="  hwaccel_args: preset-vaapi" ;;
+  0x1002) GPU=amd;   OVDEV=CPU; HW="  hwaccel_args: preset-vaapi" ;;
+  *)      GPU=none;  OVDEV=CPU; HW="  hwaccel_args: []" ;;
+esac
+pct config 101 | grep -q '^dev0:' || { [ "$GPU" = none ] || echo "!! CT 101 has no GPU passed through: CPU detector + software decode"; GPU=none; OVDEV=CPU; HW="  hwaccel_args: []"; }
+echo "Frigate GPU: $GPU (OpenVINO on $OVDEV)"
+DEVS=""; [ "$GPU" != none ] && DEVS="    devices:
+      - /dev/dri/renderD128:/dev/dri/renderD128"
+pct exec 101 -- env OVDEV="$OVDEV" HW="$HW" DEVS="$DEVS" bash -c '
 set -e
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -q >/dev/null && apt-get -y -q install curl ca-certificates >/dev/null
@@ -15,9 +29,9 @@ mqtt:
 detectors:
   ov:
     type: openvino
-    device: GPU
+    device: $OVDEV
 ffmpeg:
-  hwaccel_args: preset-vaapi
+$HW
 record:
   enabled: true
   retain:
@@ -45,8 +59,7 @@ services:
     image: ghcr.io/blakeblackshear/frigate:0.17.2   # pinned: tested version, upgrade on purpose
     restart: unless-stopped
     shm_size: "256mb"
-    devices:
-      - /dev/dri/renderD128:/dev/dri/renderD128
+$DEVS
     volumes:
       - /etc/localtime:/etc/localtime:ro
       - /opt/frigate/config:/config
@@ -64,5 +77,5 @@ C
 cd /opt/frigate && docker compose pull -q && docker compose up -d
 sleep 40
 docker ps --format "{{.Names}} {{.Image}} {{.Status}}"
-docker logs frigate 2>&1 | grep -ciE "traceback|typeerror"; curl -s -m 5 http://127.0.0.1:5000/api/version
+echo "errors in log: $(docker logs frigate 2>&1 | grep -ciE "traceback|typeerror" || true)"; echo "version $(curl -s -m 5 http://127.0.0.1:5000/api/version)"
 '

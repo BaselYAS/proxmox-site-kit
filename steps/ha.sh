@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 set -e
 V=18.4
 if qm status 102 >/dev/null 2>&1; then echo "102 exists"; exit 0; fi

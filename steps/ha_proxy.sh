@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # Runs ON the Proxmox host: set HA (VM 102) trusted proxy = this LAN /24 + X-Forwarded-For on, in HA's own storage
 # (.storage/http; HAOS ignores a YAML http: block for these). Edited only while HA core is stopped (clean
 # `ha core stop` / edit / `ha core start`), backup kept. Idempotent.

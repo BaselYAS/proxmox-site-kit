@@ -1,5 +1,6 @@
 #!/bin/bash
 # site-kit-prep.sh — stand up a fresh Proxmox VE box as a standard edge/site box, in one command.
+# DEPRECATED: use site-kit.sh on the box instead (README). This remote style still works, old layout (incl. CT 104).
 #
 #   site-kit-prep.sh <NAME> <LAN-IP> [--net keep|dhcp|static <ADDR/CIDR> <GATEWAY>] [--no-tunnel] [--no-tailscale] [--fg]
 #     NAME     box identity, e.g. SITE7 (used for every guest: SITE7-Frigate …, Tailscale site7, hostnames site7-prox/-ha)

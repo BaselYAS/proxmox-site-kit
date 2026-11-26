@@ -20,7 +20,7 @@ On the box, as root (Proxmox web UI → the node → **Shell**, or SSH):
 
 ## What it asks (Enter = default)
 - Site / box name · timezone (`Asia/Riyadh`)
-- Host IP: keep, static (IP/prefix, gateway, DNS), or dhcp (bench prep only: back to static at the site with `site-kit-relocate.sh` or the kit with static)
+- Host IP: keep, static (IP/prefix, gateway, DNS), or dhcp (bench prep only: at the branch run the relocate command below)
 - Frigate [y] · Home Assistant [y] · Ubuntu desktop [n] · Cloudflare tunnel [n] (then the tunnel token) · Tailscale [y]
 - Lock the guests to static IPs [y]
 
@@ -37,6 +37,17 @@ It checks each part (Frigate API, HA port, Tailscale IP, free CPU/RAM) and print
 
 Then it offers to run the **pw-detect installer**: paste the command from the hub (**Add site → copy**), or skip and paste it later.
 Re-check any time: `bash /root/proxmox-site-kit/site-kit.sh --check`
+
+## Moving a box to its branch
+Prepared it at the office on DHCP? Plug it into the branch LAN, open its Shell (find it via Tailscale or the router's
+DHCP list) and run:
+
+    bash <(curl -fsSL https://raw.githubusercontent.com/BaselYAS/proxmox-site-kit/main/site-kit-relocate.sh)
+
+It asks: host IP (keep what it has now, or a static IP you give: checked free first), lock guests static [y],
+container DNS = gateway + 1.1.1.1 [y], HA trusted proxy [y], pw-detect → Frigate's new IP + relays [y if installed],
+HA over Tailscale [n], Cloudflare hostnames [n]. Summary, Go. The host IP is changed last and comes back by itself if
+the box can't reach its gateway within 60 s. It ends with checks and the new address. Safe to re-run.
 
 ## More
 Details, gotchas, the internals and the older remote style (`site-kit-prep.sh`, deprecated) and `site-kit-relocate.sh`:

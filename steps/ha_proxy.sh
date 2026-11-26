@@ -2,7 +2,7 @@
 # Runs ON the Proxmox host: set HA (VM 102) trusted proxy = this LAN /24 + X-Forwarded-For on, in HA's own storage
 # (.storage/http; HAOS ignores a YAML http: block for these). Edited only while HA core is stopped (clean
 # `ha core stop` / edit / `ha core start`), backup kept. Idempotent.
-NET=$(ip -4 -br a show vmbr0 | awk '{print $3}' | python3 -c "import ipaddress,sys;print(ipaddress.ip_interface(sys.stdin.read().strip()).network)")
+NET=${SK_NET:-$(ip -4 -br a show vmbr0 | awk '{print $3}' | python3 -c "import ipaddress,sys;print(ipaddress.ip_interface(sys.stdin.read().strip()).network)")}
 qm guest exec 102 --timeout 180 -- sh -c "
 F=/mnt/data/supervisor/homeassistant/.storage/http
 [ -f \$F ] || { echo 'HA http storage not there yet (HA not started once?)'; exit 0; }

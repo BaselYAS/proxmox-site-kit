@@ -36,13 +36,24 @@ Every step skips what already exists, so both commands are safe to re-run.
 It runs detached (use `--fg` to stay attached); logs in `WORK_DIR/site7/driver.log`, one log per step next to it.
 The Ubuntu desktop keeps installing inside the VM for 15-30 min after its step finishes.
 
-When the box has been moved to its site and is on the new LAN:
+Moving a box (any style) to its site: run `site-kit-relocate.sh` ON the box (README, "Moving a box to its branch").
+The old remote call (`./site-kit-relocate.sh SITE7 <IP>` from your machine) is **deprecated**: it now forwards to
+`site-kit-relocate-remote.sh` (locks to the current IPs with no choice, no rollback, doesn't fix pw-detect). There the
+Tailscale /32 route is off unless `TAILSCALE=on`, and Proxmox goes public on Cloudflare only with `CF_PUBLISH_PROXMOX=yes`.
 
-    ./site-kit-relocate.sh SITE7 <its LAN or Tailscale IP>
-Locks host + guests to their current IPs, sets container DNS to the site router + 1.1.1.1, sets HA's trusted proxy to
-the new LAN, re-shares HA's IP over Tailscale (/32), updates the Cloudflare tunnel routes and tests both public links.
+`./site-kit-prep.sh --help` and `./site-kit-relocate-remote.sh --help` print the full usage.
 
-`./site-kit-prep.sh --help` and `./site-kit-relocate.sh --help` print the full usage.
+## site-kit-relocate.sh (on the box)
+- Order: guests (`steps/static.sh`, guests locked at the bench to another LAN go back to DHCP first) → HA proxy →
+  host IP (`steps/host_static.sh`: rollback copy in `/root/site-kit-rollback.<time>/`, detached apply, auto-restore if
+  the gateway doesn't answer within 60 s, log `/root/site-kit-static.log`) → pw-detect (`steps/pwdetect_fix.sh`) →
+  optional Tailscale route / Cloudflare → checks. pw-detect runs after the host step so it uses the address that stuck.
+- pw-detect: the CT with `/opt/pw-detect/data/settings.json`. Updates `frigate.host` (= CT 101's IP) and
+  `/etc/pw-detect/hub.conf` (`frigate=`, `hub=` host IP), restarts `pw-detect-agent` and runs `relay-apply.py` once with
+  the agent's environment; on the host rewrites `pw-hub-fwd.service` (bind/allowed CT) and `tailscale serve :8140`.
+  Backups: `*.before-relocate`. Not covered: the host health-push agent's own config (it uses CT IDs).
+- Cloudflare: token file on the box + zone; HA only by default; Proxmox only after typing `yes I understand` (add a
+  Cloudflare Access policy). Non-interactive: `SK_YES=1` + the env names in `--help`. `--check` = checks only.
 
 ## Config reference (`site-kit.conf`, or the file in `$SITEKIT_CONF`)
 - `TS_AUTHKEY` — a ready Tailscale auth key (tag it `tag:client`)
@@ -93,9 +104,10 @@ Secrets never live in this repo. The generated Ubuntu password is stored on the 
 ## Layout
 - `site-kit.sh` — the one command, runs ON the Proxmox host (downloads the kit to `/root/proxmox-site-kit`)
 - `site-kit-prep.sh` — the old remote build driver (deprecated; runs from your machine over SSH)
-- `site-kit-relocate.sh` — the re-home driver
+- `site-kit-relocate.sh` — move a box to its branch, ON the box
+- `site-kit-relocate-remote.sh` — the old remote re-home driver (deprecated)
 - `steps/` — scripts run on the host: `host`, `frigate`, `ha`, `ubuntu` (templated with `__N__` box name, `__n__` lowercase,
-  `__U__` Ubuntu user, `__TZ__` timezone), plus `static` and `ha_proxy`
+  `__U__` Ubuntu user, `__TZ__` timezone), plus `static`, `ha_proxy`, `host_dhcp`, `host_static`, `pwdetect_fix`
 
 ## License
 MIT — see LICENSE.

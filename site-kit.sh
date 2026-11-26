@@ -41,7 +41,7 @@ ask(){ local v=$1 q=$2 d=${3:-} a; if [ -n "${!v:-}" ]; then return; fi
   if [ -t 0 ]; then read -r -p "$q [${d}]: " a; else a=""; fi
   a=${a//$'\r'/}; a=${a//\\/}; a="${a#"${a%%[![:space:]]*}"}"; a="${a%"${a##*[![:space:]]}"}"   # web consoles can send CR / stray chars
   printf -v "$v" '%s' "${a:-$d}"; }
-DHCP_WARN="DHCP is for bench prep only: run site-kit-relocate.sh (or the kit with static) at the site"
+DHCP_WARN="DHCP is for bench prep only: run site-kit-relocate.sh ON the box at the site"
 cidr_ok(){ [[ $1 =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}$ ]]; }
 ip_ok(){ [[ $1 =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; }
 cur_cidr(){ ip -4 -br a show vmbr0 2>/dev/null | awk '{print $3}' | head -1; }

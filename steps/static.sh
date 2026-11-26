@@ -68,3 +68,4 @@ except Exception: pass"); [ -n "$ADDR" ] && python3 -c "import ipaddress,sys;sys
   esac
 done
 [ "$NEEDRELOAD" = 1 ] && { (sleep 2; dhclient -x vmbr0 >/dev/null 2>&1; ifreload -a; systemctl restart pve-cluster pveproxy) >/dev/null 2>&1 & echo "host network reload scheduled"; }
+exit 0

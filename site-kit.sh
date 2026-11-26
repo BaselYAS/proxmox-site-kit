@@ -6,7 +6,8 @@
 # It asks a few questions (Enter = default), shows a summary, then builds:
 #   CT 101 Frigate (NVR) · VM 102 Home Assistant OS · optional VM 103 Ubuntu desktop · optional CT 105 Cloudflare tunnel
 #   host basics (repos, upgrade, timezone, NTP, smartmontools, nag off) · Tailscale on the host · static IPs
-# Safe to re-run: every part that already exists is skipped. Log: /root/site-kit.log
+# Safe to re-run: every part that already exists is skipped. The window shows numbered steps (also in
+# /root/site-kit.screen); the full detail (apt, downloads) is in /root/site-kit.log
 #
 #   site-kit.sh --check      only the end-of-run checks (parts up, Tailscale, free CPU/RAM)
 #   site-kit.sh --help
@@ -103,71 +104,87 @@ handover(){
 
 if [ "${1:-}" = --check ]; then checks; n=${SITE,,}; manual_left; exit 0; fi
 
-# ---- 1. worker (detached): does the work, writes the log ----
+# ---- 1. worker (detached): does the work. stdout = the full log; the window shows $SK_SCREEN (lib/progress.sh) ----
+p_tailscale(){
+  command -v tailscale >/dev/null || { note "installing Tailscale"; curl -fsSL https://tailscale.com/install.sh | sh >/tmp/ts-install.log 2>&1 || { show "!! Tailscale install failed (/tmp/ts-install.log)"; return 1; }; }
+  if [ -n "$(tailscale ip -4 2>/dev/null)" ]; then skipped "Tailscale already online: $(tailscale ip -4 | head -1)"; return 0; fi
+  local TAGS="" U i; [ -n "${TS_TAGS:-}" ] && TAGS="--advertise-tags=$TS_TAGS"
+  note "joining the tailnet as $n ${TS_TAGS:+(tag $TS_TAGS)}"
+  (tailscale up --hostname="$n" $TAGS >/tmp/ts-up.log 2>&1 &); sleep 8
+  if [ -n "$TAGS" ] && grep -q -i -E "tag.*(not|invalid|permitted|owner)|requested tags" /tmp/ts-up.log; then
+    show "!! Tailscale refused the tag ${TS_TAGS} (it must exist in the tailnet's tagOwners). Joining WITHOUT a tag; ask your admin to tag the box."
+    (tailscale up --hostname="$n" --reset >/tmp/ts-up.log 2>&1 &); sleep 8
+  fi
+  U=$(grep -o 'https://login.tailscale.com[^ ]*' /tmp/ts-up.log | head -1)
+  [ -n "$U" ] && { show ">>> APPROVE THIS BOX IN TAILSCALE: open this link and log in:"; show ">>> $U"; }
+  note "waiting for approval (up to ${TS_WAIT_MIN:-10} min)"
+  for i in $(seq $(( ${TS_WAIT_MIN:-10} * 6 ))); do [ -n "$(tailscale ip -4 2>/dev/null)" ] && break; sleep 10; done
+  if [ -n "$(tailscale ip -4 2>/dev/null)" ]; then note "Tailscale online: $(tailscale ip -4 | head -1)"
+  else show "!! Tailscale not approved within ${TS_WAIT_MIN:-10} min: carrying on. Later: run  tailscale up  and open the link."; fi
+  note "with tag:client the hub access rule applies by itself; untagged: ask your network admin to tag it or add its rule"; }
+p_cloudflare(){
+  if [ -s /root/.site-kit-cf-token ]; then
+    pct push 105 /root/.site-kit-cf-token /root/cf-token >/dev/null && rm -f /root/.site-kit-cf-token
+    note "installing cloudflared in CT 105"
+    pct exec 105 -- bash -c 'export DEBIAN_FRONTEND=noninteractive; umask 077; mkdir -p /etc/cloudflared; mv /root/cf-token /etc/cloudflared/token
+command -v cloudflared >/dev/null || { apt-get update -q; apt-get install -y -q curl gpg; mkdir -p /usr/share/keyrings; curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg -o /usr/share/keyrings/cloudflare-main.gpg; echo "deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared any main" > /etc/apt/sources.list.d/cloudflared.list; apt-get update -q; apt-get install -y -q cloudflared; }
+printf "[Unit]\nDescription=Cloudflare tunnel\nAfter=network-online.target\nWants=network-online.target\n[Service]\nExecStart=/usr/bin/cloudflared --no-autoupdate tunnel run --token-file /etc/cloudflared/token\nRestart=on-failure\nRestartSec=5\n[Install]\nWantedBy=multi-user.target\n" > /etc/systemd/system/cloudflared.service
+systemctl daemon-reload; systemctl enable --now cloudflared >/dev/null 2>&1; systemctl is-active cloudflared' && note "cloudflared running"
+  elif pct exec 105 -- test -s /etc/cloudflared/token 2>/dev/null; then skipped "tunnel token already in CT 105"
+  else show "!! no tunnel token given: put it in CT 105 /etc/cloudflared/token and re-run"; return 1; fi; }
+p_haproxy(){ local HAIP="" i
+  note "waiting for the HA VM's IP (guest agent)"
+  for i in $(seq 30); do HAIP=$(guest_ip vm 102); [ -n "$HAIP" ] && break; sleep 20; done
+  [ -n "$HAIP" ] || { show "!! HA VM 102 has no IP yet (first boot can be slow): re-run later"; return 1; }
+  note "HA IP $HAIP; setting the trusted proxy"
+  local out; out=$(timeout 300 bash "$KIT/steps/ha_proxy.sh") || { show "!! $out"; return 1; }
+  case "$out" in *already*) skipped "HA at $HAIP, $out" ;; *) note "$out" ;; esac
+  if [ "$P_TS" = y ] && [ -n "$(tailscale ip -4 2>/dev/null)" ]; then
+    printf 'net.ipv4.ip_forward=1\n' > /etc/sysctl.d/99-tailscale-route.conf; sysctl -q -p /etc/sysctl.d/99-tailscale-route.conf
+    tailscale set --advertise-routes="$HAIP/32" && note "HA route $HAIP/32 advertised on Tailscale: approve it in the admin console"; fi; }
+p_static(){ note "locking guests to their current IPs"; SK_SKIP_HOST=1 SK_GW="${HOST_GW:-}" timeout 600 bash "$KIT/steps/static.sh"; }
+p_hostip(){
+  if [ "$NET_MODE" = dhcp ]; then note "host -> DHCP"
+    SK_WAIT=1 timeout 300 bash "$KIT/steps/host_dhcp.sh" | while IFS= read -r l; do case $l in "host: already DHCP"*) skipped "${l#host: }" ;; *) note "$l" ;; esac; done
+    return "${PIPESTATUS[0]}"; fi
+  if [ "$HOST_CIDR" = "$(cur_cidr)" ] && [ "$HOST_GW" = "$(cur_gw)" ] && ! grep -q "iface vmbr0 inet dhcp" /etc/network/interfaces; then
+    skipped "host already at $HOST_CIDR gw $HOST_GW"; return 0; fi
+  cp -p /etc/network/interfaces "/root/interfaces.before-site-kit.$(date +%s)"
+  python3 - "$HOST_CIDR" "$HOST_GW" <<'PY'
+import re,sys;p='/etc/network/interfaces';s=open(p).read();a,g=sys.argv[1],sys.argv[2]
+s=re.sub(r'iface vmbr0 inet (dhcp|static|manual)\n((?:[ \t]+(?:address|gateway) [^\n]*\n)*)','iface vmbr0 inet static\n\taddress %s\n\tgateway %s\n'%(a,g),s,count=1);open(p,'w').write(s)
+PY
+  sed -i -E "s/^[0-9.]+ ($(hostname)\.\S*) $(hostname)\b.*/${HOST_CIDR%/*} \1 $(hostname)   # set by site-kit/" /etc/hosts
+  rm -f /etc/dhcp/dhclient-exit-hooks.d/site-kit-hosts   # DHCP bench mode hook, not needed on static
+  [ -n "${HOST_DNS:-}" ] && printf 'search %s\nnameserver %s\n' "$(hostname -d 2>/dev/null || echo local)" "$HOST_DNS" > /etc/resolv.conf
+  show "      rollback: cp /root/interfaces.before-site-kit.* /etc/network/interfaces; ifreload -a"
+  show "      host moves to ${HOST_CIDR%/*} in 5 s: reconnect there (https://${HOST_CIDR%/*}:8006)"
+  (sleep 5; dhclient -x vmbr0 >/dev/null 2>&1; ifreload -a; systemctl restart pve-cluster pveproxy) >/dev/null 2>&1 &   # stop a bench-mode dhclient first
+  sleep 15; }
 if [ "${1:-}" = --run ]; then
   umask 022   # unprivileged CT rootfs must be readable by the mapped root
   # shellcheck source=/dev/null
   . "$ANS"; n=${SITE,,}
+  # shellcheck source=lib/progress.sh
+  . "$KIT/lib/progress.sh"
   SK_CTS=""; [ "$P_FRIGATE" = y ] && SK_CTS="101"; [ "$P_CF" = y ] && SK_CTS="$SK_CTS 105"; SK_CTS=${SK_CTS# }
   echo "=== site-kit $(date '+%F %T') site=$SITE parts: frigate=$P_FRIGATE ha=$P_HA ubuntu=$P_UBUNTU cloudflare=$P_CF tailscale=$P_TS net=$NET_MODE"
-  say "1 host basics + containers ($SK_CTS)"; run_step host 1800 || echo "!! host step had errors (see above)"
-  if [ "$P_TS" = y ]; then say "2 Tailscale"
-    command -v tailscale >/dev/null || { curl -fsSL https://tailscale.com/install.sh | sh >/tmp/ts-install.log 2>&1 || echo "!! Tailscale install failed (/tmp/ts-install.log)"; }
-    if tailscale ip -4 >/dev/null 2>&1 && [ -n "$(tailscale ip -4 2>/dev/null)" ]; then echo "Tailscale already online: $(tailscale ip -4 | head -1)"
-    else
-      TAGS=""; [ -n "${TS_TAGS:-}" ] && TAGS="--advertise-tags=$TS_TAGS"
-      (tailscale up --hostname="$n" $TAGS >/tmp/ts-up.log 2>&1 &); sleep 8
-      if [ -n "$TAGS" ] && grep -q -i -E "tag.*(not|invalid|permitted|owner)|requested tags" /tmp/ts-up.log; then
-        echo "!! Tailscale refused the tag ${TS_TAGS} (it must exist in the tailnet's tagOwners). Joining WITHOUT a tag; ask your admin to tag the box."
-        (tailscale up --hostname="$n" --reset >/tmp/ts-up.log 2>&1 &); sleep 8
-      fi
-      U=$(grep -o 'https://login.tailscale.com[^ ]*' /tmp/ts-up.log | head -1)
-      [ -n "$U" ] && { echo ">>> APPROVE THIS BOX IN TAILSCALE: open this link and log in:"; echo ">>> $U"; }
-      for i in $(seq $(( ${TS_WAIT_MIN:-10} * 6 ))); do [ -n "$(tailscale ip -4 2>/dev/null)" ] && break; sleep 10; done
-      if [ -n "$(tailscale ip -4 2>/dev/null)" ]; then echo "Tailscale online: $(tailscale ip -4 | head -1)"
-      else echo "!! Tailscale not approved within ${TS_WAIT_MIN:-10} min: carrying on. Later: run  tailscale up  and open the link."; fi
-    fi
-    echo "Reminder: with tag:client the hub access rule applies by itself; if the box joined untagged, ask your network admin to tag it or add its rule."
-  fi
-  [ "$P_FRIGATE" = y ] && { say "3 Frigate (CT 101)"; run_step frigate 1800 || echo "!! Frigate step had errors"; }
-  [ "$P_HA" = y ] && { say "4 Home Assistant (VM 102)"; run_step ha 1800 || echo "!! HA step had errors"; }
-  [ "$P_UBUNTU" = y ] && { say "5 Ubuntu desktop (VM 103)"; run_step ubuntu 1800 || echo "!! Ubuntu step had errors"; }
-  if [ "$P_CF" = y ]; then say "6 Cloudflare tunnel connector (CT 105)"
-    if [ -s /root/.site-kit-cf-token ]; then
-      pct push 105 /root/.site-kit-cf-token /root/cf-token >/dev/null && rm -f /root/.site-kit-cf-token
-      pct exec 105 -- bash -c 'export DEBIAN_FRONTEND=noninteractive; umask 077; mkdir -p /etc/cloudflared; mv /root/cf-token /etc/cloudflared/token
-command -v cloudflared >/dev/null || { apt-get update -q; apt-get install -y -q curl gpg; mkdir -p /usr/share/keyrings; curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg -o /usr/share/keyrings/cloudflare-main.gpg; echo "deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared any main" > /etc/apt/sources.list.d/cloudflared.list; apt-get update -q; apt-get install -y -q cloudflared; } >/dev/null 2>&1
-printf "[Unit]\nDescription=Cloudflare tunnel\nAfter=network-online.target\nWants=network-online.target\n[Service]\nExecStart=/usr/bin/cloudflared --no-autoupdate tunnel run --token-file /etc/cloudflared/token\nRestart=on-failure\nRestartSec=5\n[Install]\nWantedBy=multi-user.target\n" > /etc/systemd/system/cloudflared.service
-systemctl daemon-reload; systemctl enable --now cloudflared >/dev/null 2>&1; systemctl is-active cloudflared'
-    else pct exec 105 -- test -s /etc/cloudflared/token 2>/dev/null && echo "tunnel token already in CT 105" || echo "!! no tunnel token given: put it in CT 105 /etc/cloudflared/token and re-run"; fi
-  fi
-  if [ "$P_HA" = y ]; then say "7 HA address + trusted proxy"
-    HAIP=""; for i in $(seq 30); do HAIP=$(guest_ip vm 102); [ -n "$HAIP" ] && break; sleep 20; done; echo "HA IP ${HAIP:-unknown}"
-    if [ -n "$HAIP" ]; then timeout 300 bash "$KIT/steps/ha_proxy.sh"
-      if [ "$P_TS" = y ] && [ -n "$(tailscale ip -4 2>/dev/null)" ]; then
-        printf 'net.ipv4.ip_forward=1\n' > /etc/sysctl.d/99-tailscale-route.conf; sysctl -q -p /etc/sysctl.d/99-tailscale-route.conf
-        tailscale set --advertise-routes="$HAIP/32" && echo "HA route $HAIP/32 advertised on Tailscale: approve it in the admin console"; fi; fi
-  fi
-  if [ "$LOCK_STATIC" = y ]; then say "8 static IPs (guests keep the address they got)"; SK_SKIP_HOST=1 SK_GW="${HOST_GW:-}" timeout 600 bash "$KIT/steps/static.sh"; fi
+  N=1; for x in "$P_TS" "$P_FRIGATE" "$P_HA" "$P_UBUNTU" "$P_CF" "$P_HA" "$LOCK_STATIC"; do [ "$x" = y ] && N=$((N+1)); done
+  [ "$NET_MODE" != keep ] && N=$((N+1)); plan $N
+  show "site-kit: $N steps. Full detail: $LOG"
+  part "Host basics + containers (${SK_CTS:-none})" run_step host 1800
+  [ "$P_TS" = y ] && part "Tailscale on the host" p_tailscale
+  [ "$P_FRIGATE" = y ] && part "Frigate (CT 101)" run_step frigate 1800
+  [ "$P_HA" = y ] && part "Home Assistant OS (VM 102)" run_step ha 1800
+  [ "$P_UBUNTU" = y ] && part "Ubuntu desktop (VM 103)" run_step ubuntu 1800
+  [ "$P_CF" = y ] && part "Cloudflare tunnel connector (CT 105)" p_cloudflare
+  [ "$P_HA" = y ] && part "HA address + trusted proxy" p_haproxy
+  [ "$LOCK_STATIC" = y ] && part "Static IPs for the guests" p_static
   # host network last: it can drop this session
-  if [ "$NET_MODE" = static ] && { [ "$HOST_CIDR" != "$(cur_cidr)" ] || [ "$HOST_GW" != "$(cur_gw)" ] || grep -q "iface vmbr0 inet dhcp" /etc/network/interfaces; }; then say "9 host IP -> $HOST_CIDR gw $HOST_GW"
-    cp -p /etc/network/interfaces "/root/interfaces.before-site-kit.$(date +%s)"
-    python3 - "$HOST_CIDR" "$HOST_GW" <<'PY'
-import re,sys;p='/etc/network/interfaces';s=open(p).read();a,g=sys.argv[1],sys.argv[2]
-s=re.sub(r'iface vmbr0 inet (dhcp|static|manual)\n((?:[ \t]+(?:address|gateway) [^\n]*\n)*)','iface vmbr0 inet static\n\taddress %s\n\tgateway %s\n'%(a,g),s,count=1);open(p,'w').write(s)
-PY
-    sed -i -E "s/^[0-9.]+ ($(hostname)\.\S*) $(hostname)\b.*/${HOST_CIDR%/*} \1 $(hostname)   # set by site-kit/" /etc/hosts
-    rm -f /etc/dhcp/dhclient-exit-hooks.d/site-kit-hosts   # DHCP bench mode hook, not needed on static
-    [ -n "${HOST_DNS:-}" ] && printf 'search %s\nnameserver %s\n' "$(hostname -d 2>/dev/null || echo local)" "$HOST_DNS" > /etc/resolv.conf
-    echo "rollback: cp /root/interfaces.before-site-kit.* /etc/network/interfaces; ifreload -a"
-    echo "host moves to ${HOST_CIDR%/*} in 5 s: reconnect there (https://${HOST_CIDR%/*}:8006)"
-    (sleep 5; dhclient -x vmbr0 >/dev/null 2>&1; ifreload -a; systemctl restart pve-cluster pveproxy) >/dev/null 2>&1 &   # stop a bench-mode dhclient first
-    sleep 15
-  elif [ "$NET_MODE" = static ]; then echo "host already at $HOST_CIDR gw $HOST_GW"
-  elif [ "$NET_MODE" = dhcp ]; then say "9 host IP -> DHCP"; SK_WAIT=1 timeout 300 bash "$KIT/steps/host_dhcp.sh"; fi
-  checks; manual_left
-  [ "$NET_MODE" = dhcp ] && echo " - !! $DHCP_WARN"
-  echo "=== site-kit done $(date '+%F %T')"; exit 0
+  [ "$NET_MODE" != keep ] && part "Host IP -> $([ "$NET_MODE" = dhcp ] && echo DHCP || echo "$HOST_CIDR gw $HOST_GW")" p_hostip
+  recap
+  { checks; manual_left; [ "$NET_MODE" = dhcp ] && echo " - !! $DHCP_WARN"; echo "=== site-kit done $(date '+%F %T')"; } 2>&1 | tee -a "$SK_SCREEN"
+  exit 0
 fi
 
 # ---- 2. questions ----
@@ -222,10 +239,10 @@ if [ -z "${SK_YES:-}" ] && [ -t 0 ]; then read -r -p "Go? (y/n) [y]: " a; [ "$(y
 { for v in SITE TIMEZONE NET_MODE HOST_CIDR HOST_GW HOST_DNS P_FRIGATE P_HA P_UBUNTU UBUNTU_USER P_CF P_TS TS_TAGS TS_WAIT_MIN LOCK_STATIC; do printf "%s=%q\n" "$v" "${!v}"; done; } > "$ANS" )
 
 # ---- 3. run detached (a closed window or dropped SSH never kills it), follow the log ----
-touch "$LOG"; L=$(wc -l < "$LOG")
+touch "$LOG"; : > /root/site-kit.screen
 setsid nohup env SK_INKIT=1 bash "$KIT/site-kit.sh" --run >> "$LOG" 2>&1 < /dev/null &
 PID=$!
-echo "running (pid $PID). You can close this window: it keeps going. Follow again with:  tail -f $LOG"
-echo "Total time: ~20-40 min (downloads). Watch for the Tailscale approval link."
-tail -n +$((L+1)) --pid=$PID -f "$LOG"
+echo "running (pid $PID). You can close this window: it keeps going. Follow again with:  tail -f /root/site-kit.screen"
+echo "Full detail (apt, downloads): $LOG. Total time: ~20-40 min (downloads). Watch for the Tailscale approval link."
+tail -n +1 --pid=$PID -f /root/site-kit.screen
 [ -t 0 ] && handover

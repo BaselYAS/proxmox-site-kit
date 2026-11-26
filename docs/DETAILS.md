@@ -90,7 +90,7 @@ Secrets never live in this repo. The generated Ubuntu password is stored on the 
   Any answer can be given ahead as an environment variable with the same name (`SITE`, `TIMEZONE`, `NET_MODE`=keep|static,
   `HOST_CIDR`, `HOST_GW`, `HOST_DNS`, `P_FRIGATE`, `P_HA`, `P_UBUNTU`, `UBUNTU_USER`, `P_CF`, `CF_TOKEN`, `P_TS`,
   `TS_TAGS` (default `tag:client`, `none` = no tag; if the tailnet refuses the tag the box joins untagged), `TS_WAIT_MIN` default 10, `LOCK_STATIC`), plus `SK_YES=1` to skip the confirm.
-- The work runs detached (`setsid`), so a dropped SSH session doesn't stop it; the window just follows `/root/site-kit.log`.
+- The work runs detached (`setsid`), so a dropped SSH session doesn't stop it; the window follows `/root/site-kit.screen` (progress lines from `lib/progress.sh`), while `/root/site-kit.log` keeps the full raw output. Relocate: `/root/site-kit-relocate.screen` / `.log`.
 - Order: host basics + containers → Tailscale (approval link, waits up to `TS_WAIT_MIN`) → Frigate → HA → Ubuntu →
   Cloudflare connector → HA trusted proxy (+ HA /32 route on Tailscale) → static guest IPs → host IP (last, it can drop the session) → checks.
 - `NET_MODE=dhcp` (bench prep only): `steps/host_dhcp.sh` sets vmbr0 `inet dhcp` last, keeps a rollback copy (`/root/interfaces.before-dhcp.*`, auto-restored if no lease in 60 s), and adds a dhclient hook (`/etc/dhcp/dhclient-exit-hooks.d/site-kit-hosts`) that keeps the hostname's `/etc/hosts` line on the current IP and restarts pve-cluster/pveproxy when it changes. Static mode and `site-kit-relocate.sh` remove the hook.

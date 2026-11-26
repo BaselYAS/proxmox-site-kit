@@ -104,25 +104,29 @@ if [ "${1:-}" = --run ]; then
   . "$ANS"; n=$(hostname -s | tr 'A-Z' 'a-z')
   echo "=== site-kit-relocate $(date '+%F %T') host=$HOST_MODE $HOST_CIDR gw $HOST_GW guests=$LOCK_GUESTS dns=$CT_DNS ha=$HA_PROXY pw=$PW_FIX ts=$TS_ROUTE cf=$CF"
   LAN=$(net_of "$HOST_CIDR")
-  if [ "$LOCK_GUESTS" = y ] || [ "$CT_DNS" = y ]; then say "1 guests: static on this LAN ($LAN), container DNS"
-    if [ "$LOCK_GUESTS" = y ]; then SK_SKIP_HOST=1 SK_GW="$HOST_GW" SK_NET="$LAN" SK_NO_DNS=$([ "$CT_DNS" = y ] && echo 0 || echo 1) timeout 900 bash "$KIT/steps/static.sh"
+  # shellcheck source=lib/progress.sh
+  SK_SCREEN=/root/site-kit-relocate.screen; . "$KIT/lib/progress.sh"
+  N=1; for x in "$LOCK_GUESTS$CT_DNS" "$HA_PROXY" "$PW_FIX" "$TS_ROUTE" "$CF"; do [[ $x == *y* ]] && N=$((N+1)); done; plan $N
+  show "site-kit-relocate: $N steps. Full detail: $LOG"
+  r_guests(){ if [ "$LOCK_GUESTS" = y ]; then note "guests -> static on $LAN"; SK_SKIP_HOST=1 SK_GW="$HOST_GW" SK_NET="$LAN" SK_NO_DNS=$([ "$CT_DNS" = y ] && echo 0 || echo 1) timeout 900 bash "$KIT/steps/static.sh" | while IFS= read -r l; do case $l in CT*|VM*|"container DNS"*) note "$l" ;; *) printf '%s\n' "$l" ;; esac; done; return "${PIPESTATUS[0]}"
     else for id in $(pct list | awk 'NR>1{print $1}'); do pct set "$id" --nameserver "$HOST_GW 1.1.1.1" >/dev/null 2>&1
-      pct exec "$id" -- sh -c "rm -f /etc/.pve-ignore.resolv.conf; printf 'nameserver $HOST_GW\nnameserver 1.1.1.1\n' > /etc/resolv.conf" 2>/dev/null && echo "CT$id dns $HOST_GW + 1.1.1.1"; done; fi
-  fi
-  [ "$HA_PROXY" = y ] && { say "2 HA trusted proxy"; SK_NET="$LAN" timeout 300 bash "$KIT/steps/ha_proxy.sh"; }
-  say "3 host IP -> static $HOST_CIDR gw $HOST_GW (last: can drop this session)"
-  SK_WAIT=1 timeout 200 bash "$KIT/steps/host_static.sh" "$HOST_CIDR" "$HOST_GW" "$HOST_DNS"; HRC=$?
-  [ $HRC = 3 ] && echo "!! host address rolled back: the box is still at $(cur_cidr). Check the gateway/IP and re-run."
+      pct exec "$id" -- sh -c "rm -f /etc/.pve-ignore.resolv.conf; printf 'nameserver $HOST_GW\nnameserver 1.1.1.1\n' > /etc/resolv.conf" 2>/dev/null && note "CT$id dns $HOST_GW + 1.1.1.1"; done; fi; }
+  [[ $LOCK_GUESTS$CT_DNS == *y* ]] && part "Guests: static on this LAN ($LAN), container DNS" r_guests
+  [ "$HA_PROXY" = y ] && part "HA trusted proxy" env SK_NET="$LAN" timeout 300 bash "$KIT/steps/ha_proxy.sh"
+  part "Host IP -> static $HOST_CIDR gw $HOST_GW (can drop this session; rolls back if the gateway is dead)" env SK_WAIT=1 timeout 200 bash "$KIT/steps/host_static.sh" "$HOST_CIDR" "$HOST_GW" "$HOST_DNS"; HRC=$?
+  [ $HRC = 3 ] && show "!! host address rolled back: the box is still at $(cur_cidr). Check the gateway/IP and re-run."
   HIP=$(cur_cidr); HIP=${HIP%/*}
-  if [ "$PW_FIX" = y ]; then say "4 pw-detect"; PW=$(find_pw); FIP=$(guest_ip ct 101)
-    if [ -n "$PW" ] && [ -n "$FIP" ]; then timeout 600 bash "$KIT/steps/pwdetect_fix.sh" "$PW" "$FIP" "$HIP"
-    else echo "!! pw-detect CT ${PW:-not found} / Frigate IP ${FIP:-unknown}: skipped"; fi; fi
-  if [ "$TS_ROUTE" = y ]; then say "5a HA over Tailscale (/32 route)"; HAIP=$(guest_ip vm 102)
+  r_pw(){ local PW FIP; PW=$(find_pw); FIP=$(guest_ip ct 101)
+    if [ -n "$PW" ] && [ -n "$FIP" ]; then note "pw-detect CT $PW -> Frigate $FIP, host $HIP"; timeout 600 bash "$KIT/steps/pwdetect_fix.sh" "$PW" "$FIP" "$HIP"
+    else skipped "pw-detect CT ${PW:-not found} / Frigate IP ${FIP:-unknown}"; fi; }
+  [ "$PW_FIX" = y ] && part "pw-detect: new Frigate/hub addresses" r_pw
+  r_ts(){ local HAIP; HAIP=$(guest_ip vm 102)
     if [ -n "$HAIP" ] && [ -n "$(tailscale ip -4 2>/dev/null)" ]; then
       printf 'net.ipv4.ip_forward=1\n' > /etc/sysctl.d/99-tailscale-route.conf; sysctl -q -p /etc/sysctl.d/99-tailscale-route.conf
-      tailscale set --advertise-routes="$HAIP/32" && echo "advertised $HAIP/32: approve it in the Tailscale admin console (Machines > $n > Edit route settings)"
-    else echo "!! no HA IP or Tailscale offline: skipped"; fi; fi
-  if [ "$CF" = y ]; then say "5b Cloudflare public hostnames (tunnel $n)"
+      tailscale set --advertise-routes="$HAIP/32" && note "advertised $HAIP/32: approve it in the Tailscale admin console (Machines > $n > Edit route settings)"
+    else skipped "no HA IP or Tailscale offline"; fi; }
+  [ "$TS_ROUTE" = y ] && part "HA over Tailscale (/32 route)" r_ts
+  r_cf(){ local AH CFA HAIP ACC TID ING HAP
     if [ -r "$CF_TOKEN_FILE" ] && [ -n "$CF_ZONE" ]; then
       AH="Authorization: Bearer $(cat "$CF_TOKEN_FILE")"; CFA=https://api.cloudflare.com/client/v4; HAIP=$(guest_ip vm 102)
       ACC=$(curl -s -m 20 -H "$AH" $CFA/accounts | python3 -c "import json,sys;print(json.load(sys.stdin)['result'][0]['id'])" 2>/dev/null)
@@ -130,15 +134,17 @@ if [ "${1:-}" = --run ]; then
       if [ -n "$TID" ]; then ING=""; HAP=$(ha_port "$HAIP")
         [ -n "$HAIP" ] && ING="{\"hostname\":\"$n-ha.$CF_ZONE\",\"service\":\"http://$HAIP:${HAP:-80}\"},"
         [ "$CF_PROX" = y ] && { ING="$ING{\"hostname\":\"$n-prox.$CF_ZONE\",\"service\":\"https://$HIP:8006\",\"originRequest\":{\"noTLSVerify\":true}},"
-          echo "!! Proxmox is now PUBLIC at https://$n-prox.$CF_ZONE: add a Cloudflare Access policy for it NOW"; }
+          show "!! Proxmox is now PUBLIC at https://$n-prox.$CF_ZONE: add a Cloudflare Access policy for it NOW"; }
         curl -s -m 20 -X PUT -H "$AH" -H "Content-Type: application/json" "$CFA/accounts/$ACC/cfd_tunnel/$TID/configurations" \
-          -d "{\"config\":{\"ingress\":[$ING{\"service\":\"http_status:404\"}]}}" | python3 -c "import json,sys;print('routes updated:',json.load(sys.stdin)['success'])"
+          -d "{\"config\":{\"ingress\":[$ING{\"service\":\"http_status:404\"}]}}" | python3 -c "import json,sys;print('routes updated:',json.load(sys.stdin)['success'])" | while IFS= read -r l; do note "$l"; done
         pct exec 105 -- sh -c 'systemctl restart cloudflared' >/dev/null 2>&1
-      else echo "!! no tunnel named $n in Cloudflare: skipped"; fi; unset AH
-    else echo "!! token file $CF_TOKEN_FILE / zone missing: skipped"; fi; fi
-  checks
+      else skipped "no tunnel named $n in Cloudflare"; fi; unset AH
+    else skipped "token file $CF_TOKEN_FILE / zone missing"; fi; }
+  [ "$CF" = y ] && part "Cloudflare public hostnames (tunnel $n)" r_cf
+  recap
+  { checks
   echo "host address: $HIP  (https://$HIP:8006)$( t=$(tailscale ip -4 2>/dev/null | head -1); [ -n "$t" ] && echo "   Tailscale: $t")"
-  echo "=== site-kit-relocate done $(date '+%F %T')"; exit 0
+  echo "=== site-kit-relocate done $(date '+%F %T')"; } 2>&1 | tee -a "$SK_SCREEN"; exit 0
 fi
 
 # ---- 2. questions ----
@@ -186,9 +192,9 @@ if [ -z "${SK_YES:-}" ] && [ -t 0 ]; then read -r -p "Go? (y/n) [y]: " a; [ "$(y
 { for v in HOST_MODE HOST_CIDR HOST_GW HOST_DNS LOCK_GUESTS CT_DNS HA_PROXY PW_FIX TS_ROUTE CF CF_PROX CF_ZONE CF_TOKEN_FILE; do printf "%s=%q\n" "$v" "${!v:-}"; done; } > "$ANS" )
 
 # ---- 3. run detached, follow the log ----
-touch "$LOG"; L=$(wc -l < "$LOG")
+touch "$LOG"; : > /root/site-kit-relocate.screen
 setsid nohup env SK_INKIT=1 bash "$KIT/site-kit-relocate.sh" --run >> "$LOG" 2>&1 < /dev/null &
 PID=$!
-[ "${HOST_CIDR%/*}" != "${CC%/*}" ] && echo "the host moves to ${HOST_CIDR%/*} near the end: this window may freeze. Reconnect at https://${HOST_CIDR%/*}:8006 and run: tail $LOG"
-echo "running (pid $PID). Closing this window does not stop it. Follow again: tail -f $LOG"
-tail -n +$((L+1)) --pid=$PID -f "$LOG"
+[ "${HOST_CIDR%/*}" != "${CC%/*}" ] && echo "the host moves to ${HOST_CIDR%/*} near the end: this window may freeze. Reconnect at https://${HOST_CIDR%/*}:8006 and run: tail /root/site-kit-relocate.screen"
+echo "running (pid $PID). Closing this window does not stop it. Follow again: tail -f /root/site-kit-relocate.screen (full detail: $LOG)"
+tail -n +1 --pid=$PID -f /root/site-kit-relocate.screen

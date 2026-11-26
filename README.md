@@ -25,7 +25,7 @@ On the box, as root (Proxmox web UI → the node → **Shell**, or SSH):
 - Lock the guests to static IPs [y]
 
 Then it shows a summary, asks "Go?", and runs (~20-40 min). You can close the window: it keeps going.
-Watch for the **Tailscale approval link**, open it and log in. Log: `/root/site-kit.log`.
+Watch for the **Tailscale approval link**, open it and log in. The window shows numbered steps (`[3/9] Frigate (CT 101)…`, a "still working…" line every 30 s, a recap at the end); follow again with `tail -f /root/site-kit.screen`. Full detail (apt, downloads): `/root/site-kit.log`.
 Safe to re-run: anything that already exists is skipped.
 
 ## After it finishes

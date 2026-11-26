@@ -1,5 +1,6 @@
 # shellcheck shell=bash
 set -e
+type note >/dev/null 2>&1 || { note(){ echo "      $*"; }; skipped(){ note "$*"; }; }   # site-kit.sh exports these (screen lines)
 # Runs ON the Proxmox host. Detector by GPU: Intel iGPU -> OpenVINO on the GPU + VAAPI decode;
 # AMD iGPU -> OpenVINO on the CPU + VAAPI decode; no GPU -> OpenVINO on the CPU, software decode.
 pct status 101 >/dev/null 2>&1 || { echo "CT 101 missing (host step failed?)"; exit 1; }
@@ -10,15 +11,19 @@ case "$VEN" in
   *)      GPU=none;  OVDEV=CPU; HW="  hwaccel_args: []" ;;
 esac
 pct config 101 | grep -q '^dev0:' || { [ "$GPU" = none ] || echo "!! CT 101 has no GPU passed through: CPU detector + software decode"; GPU=none; OVDEV=CPU; HW="  hwaccel_args: []"; }
-echo "Frigate GPU: $GPU (OpenVINO on $OVDEV)"
+note "GPU: $GPU (OpenVINO detector on $OVDEV)"
+IMG=ghcr.io/blakeblackshear/frigate:0.17.2
+if [ "$(pct exec 101 -- sh -c "docker inspect -f '{{.State.Running}} {{.Config.Image}}' frigate 2>/dev/null" 2>/dev/null)" = "true $IMG" ]; then
+  skipped "Frigate already running (${IMG##*:}, API $(pct exec 101 -- curl -s -m 5 http://127.0.0.1:5000/api/version || echo 'not answering'))"; exit 0; fi
 DEVS=""; [ "$GPU" != none ] && DEVS="    devices:
       - /dev/dri/renderD128:/dev/dri/renderD128"
+set -o pipefail
 pct exec 101 -- env OVDEV="$OVDEV" HW="$HW" DEVS="$DEVS" bash -c '
 set -e
 export DEBIAN_FRONTEND=noninteractive
-apt-get update -q >/dev/null && apt-get -y -q install curl ca-certificates >/dev/null
-command -v docker >/dev/null || curl -fsSL https://get.docker.com | sh >/tmp/docker-install.log 2>&1
-docker --version
+echo "NOTE: apt update + curl in CT 101"; apt-get update -q && apt-get -y -q install curl ca-certificates
+command -v docker >/dev/null || { echo "NOTE: installing Docker in CT 101 (get.docker.com)"; curl -fsSL https://get.docker.com | sh; }
+echo "NOTE: $(docker --version)"
 mkdir -p /opt/frigate/config /opt/frigate/storage
 [ -f /opt/frigate/config/config.yml ] || cat > /opt/frigate/config/config.yml <<C
 # __N__ Frigate — cameras get added on site. Camera passwords via {FRIGATE_RTSP_PASSWORD} env substitution only.
@@ -74,8 +79,11 @@ $DEVS
       - "8555:8555/tcp"
       - "8555:8555/udp"
 C
-cd /opt/frigate && docker compose pull -q && docker compose up -d
+cd /opt/frigate; echo "NOTE: pulling $(grep -o "image: [^ ]*" docker-compose.yml | cut -d" " -f2) (about 1.5 GB download)"; docker compose pull -q
+echo "NOTE: image pulled ($(docker image inspect -f "{{.Size}}" $(grep -o "image: [^ ]*" docker-compose.yml | cut -d" " -f2) | awk "{printf \"%.1f GB\", \$1/1e9}") on disk)"
+echo "NOTE: starting Frigate, health check in 40 s"; docker compose up -d
 sleep 40
 docker ps --format "{{.Names}} {{.Image}} {{.Status}}"
-echo "errors in log: $(docker logs frigate 2>&1 | grep -ciE "traceback|typeerror" || true)"; echo "version $(curl -s -m 5 http://127.0.0.1:5000/api/version)"
-'
+V=$(curl -s -m 5 http://127.0.0.1:5000/api/version); E=$(docker logs frigate 2>&1 | grep -ciE "traceback|typeerror" || true)
+if [ -n "$V" ]; then echo "NOTE: health check OK: Frigate API answers, version $V, $E errors in its log"; else echo "NOTE: !! health check: Frigate API not answering yet ($E errors in its log: pct exec 101 -- docker logs frigate)"; fi
+' | while IFS= read -r l; do case $l in "NOTE: "*) note "${l#NOTE: }" ;; *) printf '%s\n' "$l" ;; esac; done

@@ -1,8 +1,10 @@
 # shellcheck shell=bash
 set -e
-if qm status 103 >/dev/null 2>&1; then echo "103 exists"; exit 0; fi
+type note >/dev/null 2>&1 || { note(){ echo "      $*"; }; skipped(){ note "$*"; }; }   # site-kit.sh exports these (screen lines)
+if qm status 103 >/dev/null 2>&1; then skipped "VM 103 exists: left alone"; exit 0; fi
 cd /var/lib/vz/template
 IMG=noble-server-cloudimg-amd64.img
+[ -s $IMG ] || note "downloading the Ubuntu 24.04 cloud image (~0.6 GB)"
 [ -s $IMG ] || curl -fsSL -o $IMG https://cloud-images.ubuntu.com/noble/current/$IMG
 [ -s $IMG ] || { echo "download failed"; exit 1; }
 mkdir -p /var/lib/vz/snippets
@@ -33,11 +35,12 @@ runcmd:
   - reboot
 Y
 chmod 600 /var/lib/vz/snippets/__n__-ubuntu-user.yml
+note "creating VM 103 __N__-Ubuntu (2 cores, 3 GB RAM, 40 GB disk)"
 qm create 103 --name __N__-Ubuntu --machine q35 --cores 2 --memory 3072 --ostype l26 --net0 virtio,bridge=vmbr0 \
   --scsihw virtio-scsi-pci --agent enabled=1 --onboot 1 --startup order=3 --vga virtio --serial0 socket \
   --description "Ubuntu 24.04 LTS desktop (cloud image + ubuntu-desktop-minimal), __N__"
-qm importdisk 103 $IMG local-lvm >/dev/null
+note "importing the disk ($(du -h $IMG | cut -f1))"; qm importdisk 103 $IMG local-lvm >/dev/null
 qm set 103 --scsi0 local-lvm:vm-103-disk-0,discard=on,ssd=1 --boot order=scsi0 --ide2 local-lvm:cloudinit \
   --ipconfig0 ip=dhcp --cicustom user=local:snippets/__n__-ubuntu-user.yml >/dev/null
 qm resize 103 scsi0 40G >/dev/null
-qm start 103; echo "Ubuntu VM started (desktop installs on first boot, ~15-30 min)"
+qm start 103; note "VM 103 started (desktop installs on first boot, ~15-30 min)"
